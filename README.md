@@ -2,6 +2,16 @@
 
 A project to develop and profile General Matrix Multiplication (GEMM) implementations on CUDA.
 
+GEMMProfiling/
+├── include/
+│   ├── gemms.cuh       # CUDA kernel declarations
+│   └── utils.cuh       # Utility function declarations
+├── main.cu             # Main program
+├── gemms.cu            # CUDA kernel implementations
+├── utils.cu            # Utility function implementations
+├── build/              # Created by Makefile for object files
+├── bin/                # Created by Makefile for executable
+└── Makefile
 ## Hardware Specifications
 
 Device 0: NVIDIA GeForce RTX 4080
