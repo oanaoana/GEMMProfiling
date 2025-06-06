@@ -10,6 +10,7 @@
 int main() {
 
     printf("Matrix size: %d x %d\n", N, N);
+    printDevicePerformanceInfo();
 
     size_t size = N * N * sizeof(float);
 

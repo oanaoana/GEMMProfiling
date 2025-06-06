@@ -5,7 +5,6 @@ INCLUDES := -I./include
 
 # Directories
 BUILD_DIR := build
-BIN_DIR := bin
 
 # Files
 SRCS := $(wildcard *.cu)
@@ -13,15 +12,14 @@ OBJS := $(patsubst %.cu,$(BUILD_DIR)/%.o,$(SRCS))
 MAIN := main
 
 # Default target
-all: setup $(BIN_DIR)/$(MAIN)
+all: setup $(MAIN)
 
 # Create build directories if they don't exist
 setup:
 	mkdir -p $(BUILD_DIR)
-	mkdir -p $(BIN_DIR)
 
 # Compile main executable
-$(BIN_DIR)/$(MAIN): $(BUILD_DIR)/main.o $(filter-out $(BUILD_DIR)/main.o, $(OBJS))
+$(MAIN): $(BUILD_DIR)/main.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
 	$(NVCC) $(CFLAGS) $^ -o $@
 
 # Compile object files
@@ -38,18 +36,11 @@ profile: clean all
 
 # Run the program
 run: all
-	$(BIN_DIR)/$(MAIN)
+	./$(MAIN)
 
 # Clean build files
 clean:
-	rm -rf $(BUILD_DIR) $(BIN_DIR)
-
-# Additional targets for specific testing
-test_naive: all
-	$(BIN_DIR)/$(MAIN) --naive
-
-test_tiled: all
-	$(BIN_DIR)/$(MAIN) --tiled
+	rm -rf $(BUILD_DIR) $(MAIN)
 
 # Dependencies
 $(BUILD_DIR)/main.o: main.cu

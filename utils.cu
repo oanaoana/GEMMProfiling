@@ -7,6 +7,43 @@ void fill_matrix(float *mat, int N) {
     }
 }
 
+// Function to print CUDA device properties including theoretical performance
+void printDevicePerformanceInfo() {
+    cudaDeviceProp prop;
+    cudaError_t err = cudaGetDeviceProperties(&prop, 0);
+
+    if (err != cudaSuccess) {
+        printf("Error getting device properties: %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    printf("\n===== DEVICE INFORMATION =====\n");
+    printf("Device: %s\n", prop.name);
+    printf("Compute capability: %d.%d\n", prop.major, prop.minor);
+    printf("Multiprocessor count: %d\n", prop.multiProcessorCount);
+
+    // Calculate peak memory bandwidth (GB/s)
+    // For RTX 4080, memory clock is ~21 GHz
+    double memory_clock_rate = prop.memoryClockRate / 1000000.0; // Convert from kHz to GHz
+    double bus_width = prop.memoryBusWidth;
+    double peak_bandwidth = 2.0 * memory_clock_rate * (bus_width / 8); // GB/s
+
+    // Calculate theoretical peak FLOPS for single precision
+    // For RTX 4080, CUDA cores = 9728
+    int cuda_cores = prop.multiProcessorCount * 128; // Approximate cores based on SM count
+    double gpu_clock_ghz = prop.clockRate / 1000000.0; // Convert kHz to GHz
+    double peak_gflops = 2.0 * cuda_cores * gpu_clock_ghz; // 2 ops per cycle with FMA
+
+    printf("Memory clock rate (base estimate): %.1f GHz\n", memory_clock_rate);
+    printf("Memory bus width: %d bits\n", prop.memoryBusWidth);
+    printf("Peak memory bandwidth: %.2f GB/s\n", peak_bandwidth);
+    printf("CUDA cores (estimate): %d\n", cuda_cores);
+    printf("GPU clock: %.3f GHz\n", gpu_clock_ghz);
+    printf("Peak performance (FP32): %.2f TFLOP/s\n", peak_gflops / 1000);
+    printf("Arithmetic intensity ridge point: %.2f FLOP/byte\n", peak_gflops / peak_bandwidth);
+    printf("\n");
+}
+
 void verify_result(float *A, float *B, float *C, int N) {
     // Use more appropriate epsilon for float-to-double comparison
     float eps = 1e-6;
