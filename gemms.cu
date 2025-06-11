@@ -1,4 +1,7 @@
 #include "gemms.cuh"
+#include <cuda_runtime.h>
+#include <cublas_v2.h>  // Add this include
+#include <stdio.h>
 
 __global__ void matmul_naive( float *A, float *B, float *C, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -40,4 +43,29 @@ __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
 
     if (row < N && col < N)
         C[row * N + col] = sum;
+}
+
+void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Create cuBLAS handle
+    cublasHandle_t handle;
+    cublasCreate(&handle);
+
+    // Setup alpha and beta for sgemm
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    // Call cuBLAS sgemm
+    // Note: cuBLAS uses column-major order while our code uses row-major order
+    // So we compute C = B*A as a workaround for row-major C = A*B
+    cublasSgemm(handle,
+                CUBLAS_OP_N, CUBLAS_OP_N,
+                n, n, n,
+                &alpha,
+                d_B, n,  // B matrix
+                d_A, n,  // A matrix
+                &beta,
+                d_C, n); // C matrix
+
+    // Destroy handle
+    cublasDestroy(handle);
 }

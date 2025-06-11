@@ -20,7 +20,7 @@ setup:
 
 # Compile main executable
 $(MAIN): $(BUILD_DIR)/main.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
-	$(NVCC) $(CFLAGS) $^ -o $@
+	$(NVCC) $(CFLAGS) $^ -o $@ -lcublas
 
 # Compile object files
 $(BUILD_DIR)/%.o: %.cu
