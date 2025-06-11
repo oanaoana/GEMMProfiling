@@ -4,14 +4,14 @@ A project to develop and profile General Matrix Multiplication (GEMM) implementa
 
 GEMMProfiling/
 ├── include/
-│   ├── gemms.cuh       # CUDA kernel declarations
-│   └── utils.cuh       # Utility function declarations
-├── main.cu             # Main program
-├── gemms.cu            # CUDA kernel implementations
-├── utils.cu            # Utility function implementations
-├── build/              # Created by Makefile for object files
-├── bin/                # Created by Makefile for executable
+│   ├── gemms.cuh         # All kernel declarations
+│   └── utils.cuh         # Utility functions
+├── gemms.cu              # GEMM implementations
+├── benchmark.cu          # Main benchmark framework
+├── main.cu               # Simple command-line interface
+├── plot_roofline.py      # Analysis script
 └── Makefile
+
 ## Hardware Specifications
 
 Device 0: NVIDIA GeForce RTX 4080

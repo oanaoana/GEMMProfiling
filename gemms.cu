@@ -1,9 +1,11 @@
+// gemms.cu
 #include "gemms.cuh"
 #include <cuda_runtime.h>
-#include <cublas_v2.h>  // Add this include
+#include <cublas_v2.h>
 #include <stdio.h>
 
-__global__ void matmul_naive( float *A, float *B, float *C, int N) {
+// Naive implementation
+__global__ void matmul_naive(float *A, float *B, float *C, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row < N && col < N) {
@@ -13,6 +15,12 @@ __global__ void matmul_naive( float *A, float *B, float *C, int N) {
         C[row * N + col] = sum;}
 }
 
+// Launch wrapper for naive implementation
+void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    matmul_naive<<<blocks, threads>>>(d_A, d_B, d_C, n);
+}
+
+// Tiled implementation
 __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
     __shared__ float tile_A[TILE_SIZE][TILE_SIZE];
     __shared__ float tile_B[TILE_SIZE][TILE_SIZE];
@@ -45,6 +53,12 @@ __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
         C[row * N + col] = sum;
 }
 
+// Launch wrapper for tiled implementation
+void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    matmul_tiled<<<blocks, threads>>>(d_A, d_B, d_C, n);
+}
+
+// cuBLAS implementation
 void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Create cuBLAS handle
     cublasHandle_t handle;
@@ -67,5 +81,28 @@ void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 
                 d_C, n); // C matrix
 
     // Destroy handle
+    cublasDestroy(handle);
+}
+
+// Add TensorCore implementation
+void launch_cublas_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    cublasHandle_t handle;
+    cublasCreate(&handle);
+
+    // Enable TensorCore math if supported
+    cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    cublasSgemm(handle,
+                CUBLAS_OP_N, CUBLAS_OP_N,
+                n, n, n,
+                &alpha,
+                d_B, n,
+                d_A, n,
+                &beta,
+                d_C, n);
+
     cublasDestroy(handle);
 }

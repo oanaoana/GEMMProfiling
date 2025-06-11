@@ -7,9 +7,8 @@ INCLUDES := -I./include
 BUILD_DIR := build
 
 # Files
-SRCS := $(wildcard *.cu)
-OBJS := $(patsubst %.cu,$(BUILD_DIR)/%.o,$(SRCS))
 MAIN := main
+BENCHMARK := benchmark_exe
 
 # Default target
 all: setup $(MAIN)
@@ -19,7 +18,11 @@ setup:
 	mkdir -p $(BUILD_DIR)
 
 # Compile main executable
-$(MAIN): $(BUILD_DIR)/main.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
+$(MAIN): $(BUILD_DIR)/main.o $(BUILD_DIR)/benchmark.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
+	$(NVCC) $(CFLAGS) $^ -o $@ -lcublas
+
+# Compile benchmark executable
+$(BENCHMARK): $(BUILD_DIR)/benchmark_main.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
 	$(NVCC) $(CFLAGS) $^ -o $@ -lcublas
 
 # Compile object files
@@ -27,7 +30,7 @@ $(BUILD_DIR)/%.o: %.cu
 	$(NVCC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 # Debug build with additional info
-debug: CFLAGS += -G
+debug: CFLAGS += -G -g
 debug: clean all
 
 # Profile build with line info for profiling tools
@@ -40,11 +43,12 @@ run: all
 
 # Clean build files
 clean:
-	rm -rf $(BUILD_DIR) $(MAIN)
+	rm -rf $(BUILD_DIR) $(MAIN) $(BENCHMARK) roofline_data.csv roofline_model.png
 
 # Dependencies
 $(BUILD_DIR)/main.o: main.cu
 $(BUILD_DIR)/gemms.o: gemms.cu include/gemms.cuh
 $(BUILD_DIR)/utils.o: utils.cu include/utils.cuh
+$(BUILD_DIR)/benchmark.o: benchmark.cu include/benchmark.h include/gemms.cuh include/utils.cuh
 
 .PHONY: all setup debug profile run clean test_naive test_tiled
