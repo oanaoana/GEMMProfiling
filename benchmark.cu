@@ -2,19 +2,20 @@
 #include "gemms.cuh"
 #include "utils.cuh"
 #include <stdio.h>
-#include <stdlib.h>
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <math.h>
 
 // Define available tests (must match NUM_TESTS in header)
 TestCase available_tests[NUM_TESTS] = {
     {"naive", launch_naive, true},
     {"tiled", launch_tiled, true},
-    {"cublas", launch_cublas, true},
-    // Add more tests here and update NUM_TESTS accordingly
+    {"cublas", launch_cublas, true}
 };
 
 // Define available sizes
-const int SIZES[] = {128, 256, 512, 1024, 2048, 4096};
-const int NUM_SIZES = sizeof(SIZES) / sizeof(SIZES[0]);
+const int SIZES[] = {256, 512, 1024, 2048};
+const int NUM_SIZES = 4;
 
 // Benchmark function
 void runBenchmark(const char* name, int n, KernelFunc kernel,
@@ -32,6 +33,12 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
     dim3 numBlocks((n + threadsPerBlock.x - 1) / threadsPerBlock.x,
                    (n + threadsPerBlock.y - 1) / threadsPerBlock.y);
 
+    // For tiled implementation, use TILE_SIZE
+    if (strcmp(name, "tiled") == 0) {
+        threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
+        numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+    }
+
     // Create CUDA events for timing
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -40,6 +47,9 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
     // Warmup run
     kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
     cudaDeviceSynchronize();
+
+    // Clear result matrix
+    cudaMemset(d_C, 0, size);
 
     // Timing run
     cudaEventRecord(start);
@@ -67,10 +77,14 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
 
 // Main benchmark function
 void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
-    printDevicePerformanceInfo();
+    printf("=== Starting Benchmarks ===\n");
 
     // Open data file for roofline model
     FILE* dataFile = fopen("roofline_data.csv", "w");
+    if (!dataFile) {
+        printf("ERROR: Could not create roofline_data.csv\n");
+        return;
+    }
     fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
 
     // Test each matrix size
@@ -86,14 +100,32 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
         float *h_B = (float*)malloc(size);
         float *h_C = (float*)malloc(size);
 
+        if (!h_A || !h_B || !h_C) {
+            printf("ERROR: Failed to allocate host memory\n");
+            return;
+        }
+
         fill_matrix(h_A, n);
         fill_matrix(h_B, n);
 
         // Allocate device memory
         float *d_A, *d_B, *d_C;
-        cudaMalloc(&d_A, size);
-        cudaMalloc(&d_B, size);
-        cudaMalloc(&d_C, size);
+        cudaError_t err;
+        err = cudaMalloc(&d_A, size);
+        if (err != cudaSuccess) {
+            printf("ERROR: cudaMalloc d_A failed: %s\n", cudaGetErrorString(err));
+            return;
+        }
+        err = cudaMalloc(&d_B, size);
+        if (err != cudaSuccess) {
+            printf("ERROR: cudaMalloc d_B failed: %s\n", cudaGetErrorString(err));
+            return;
+        }
+        err = cudaMalloc(&d_C, size);
+        if (err != cudaSuccess) {
+            printf("ERROR: cudaMalloc d_C failed: %s\n", cudaGetErrorString(err));
+            return;
+        }
 
         // Copy input data to device
         cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
@@ -107,9 +139,11 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
             runBenchmark(available_tests[j].name, n, available_tests[j].kernel,
                          h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
 
-            // Optionally verify results
-            // cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
-            // verify_result(h_A, h_B, h_C, n);
+            // Verify results for first size only
+            if (i == 0) {
+                cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+                verify_result(h_A, h_B, h_C, n);
+            }
         }
 
         // Free memory
