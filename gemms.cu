@@ -8,11 +8,14 @@
 __global__ void matmul_naive(float *A, float *B, float *C, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
+
     if (row < N && col < N) {
         float sum = 0.0f;
-        for (int k = 0; k < N; ++k)
+        for (int k = 0; k < N; k++) {
             sum += A[row * N + k] * B[k * N + col];
-        C[row * N + col] = sum;}
+        }
+        C[row * N + col] = sum;
+    }
 }
 
 // Launch wrapper for naive implementation
@@ -22,27 +25,30 @@ void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 t
 
 // Tiled implementation
 __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
-    __shared__ float tile_A[TILE_SIZE][TILE_SIZE];
-    __shared__ float tile_B[TILE_SIZE][TILE_SIZE];
+    __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
 
     int row = blockIdx.y * TILE_SIZE + threadIdx.y;
     int col = blockIdx.x * TILE_SIZE + threadIdx.x;
 
     float sum = 0.0f;
+    int num_tiles = (N + TILE_SIZE - 1) / TILE_SIZE;
 
-    for (int t = 0; t < (N + TILE_SIZE - 1) / TILE_SIZE; ++t) {
-        if (row < N && t * TILE_SIZE + threadIdx.x < N)
-            tile_A[threadIdx.y][threadIdx.x] = A[row * N + (t * TILE_SIZE + threadIdx.x)];
-        else
-            tile_A[threadIdx.y][threadIdx.x] = 0.0f;
+    for (int t = 0; t < num_tiles; ++t) {
+        // Load A tile (this was correct)
+        int A_col = t * TILE_SIZE + threadIdx.x;
+        tile_A[threadIdx.y][threadIdx.x] = (row < N && A_col < N) ?
+                                          A[row * N + A_col] : 0.0f;
 
-        if (t * TILE_SIZE + threadIdx.y < N && col < N)
-            tile_B[threadIdx.y][threadIdx.x] = B[(t * TILE_SIZE + threadIdx.y) * N + col];
-        else
-            tile_B[threadIdx.y][threadIdx.x] = 0.0f;
+        // FIXED: Load B tile correctly
+        int B_row = t * TILE_SIZE + threadIdx.y;  // Use threadIdx.y for row
+        int B_col = col;  // Use the actual column this thread is computing
+        tile_B[threadIdx.y][threadIdx.x] = (B_row < N && B_col < N) ?
+                                          B[B_row * N + B_col] : 0.0f;
 
         __syncthreads();
 
+        // Compute partial result
         for (int k = 0; k < TILE_SIZE; ++k)
             sum += tile_A[threadIdx.y][k] * tile_B[k][threadIdx.x];
 
