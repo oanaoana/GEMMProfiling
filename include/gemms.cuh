@@ -13,3 +13,6 @@ void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 t
 void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_cublas_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+// Add these CUTLASS function declarations
+void launch_cutlass(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+void launch_cutlass_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);

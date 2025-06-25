@@ -39,16 +39,8 @@ int main(int argc, char **argv) {
     }
 
     // Default: enable all tests and sizes
-    bool enabled_tests[NUM_TESTS];
-    bool enabled_sizes[NUM_SIZES];
-
-    // Initialize to true (enable all by default)
-    for (int i = 0; i < NUM_TESTS; i++) {
-        enabled_tests[i] = true;
-    }
-    for (int i = 0; i < NUM_SIZES; i++) {
-        enabled_sizes[i] = true;
-    }
+    bool enabled_tests[NUM_TESTS] = {true, true, true, true, true}; // All enabled by default
+    bool enabled_sizes[NUM_SIZES] = {true, true, true, true};       // All enabled by default
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {

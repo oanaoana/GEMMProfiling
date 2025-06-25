@@ -1,54 +1,94 @@
-# Compiler settings
-NVCC := nvcc
-CFLAGS := -O3
-INCLUDES := -I./include
+# CUDA Compiler
+NVCC = nvcc
 
 # Directories
-BUILD_DIR := build
+INCLUDE_DIR = ./include
+BUILD_DIR = build
 
-# Files
-MAIN := main
-BENCHMARK := benchmark_exe
+# CUTLASS support
+CUTLASS_PATH ?= $(HOME)/cutlass
+
+# Compiler flags
+NVCC_FLAGS = -O3 -std=c++17 -I$(INCLUDE_DIR)
+
+# Add CUTLASS include if directory exists
+ifneq ($(wildcard $(CUTLASS_PATH)/include),)
+    NVCC_FLAGS += -I$(CUTLASS_PATH)/include
+    $(info Building with CUTLASS support from $(CUTLASS_PATH))
+else
+    $(warning CUTLASS not found at $(CUTLASS_PATH) - building without CUTLASS)
+endif
+
+# Libraries
+LIBS = -lcublas
+
+# Source files
+SOURCES = main.cu benchmark.cu gemms.cu utils.cu
+
+# Object files
+OBJECTS = $(SOURCES:%.cu=$(BUILD_DIR)/%.o)
+
+# Target executable
+TARGET = main
 
 # Default target
-all: setup $(MAIN)
+all: $(TARGET)
 
-# Create build directories if they don't exist
-setup:
+# Create build directory
+$(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# Compile main executable
-$(MAIN): $(BUILD_DIR)/main.o $(BUILD_DIR)/benchmark.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
-	$(NVCC) $(CFLAGS) $^ -o $@ -lcublas
-
-# Compile benchmark executable
-$(BENCHMARK): $(BUILD_DIR)/benchmark_main.o $(BUILD_DIR)/gemms.o $(BUILD_DIR)/utils.o
-	$(NVCC) $(CFLAGS) $^ -o $@ -lcublas
-
 # Compile object files
-$(BUILD_DIR)/%.o: %.cu
-	$(NVCC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD_DIR)/%.o: %.cu | $(BUILD_DIR)
+	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
 
-# Debug build with additional info
-debug: CFLAGS += -G -g
-debug: clean all
-
-# Profile build with line info for profiling tools
-profile: CFLAGS += -lineinfo
-profile: clean all
-
-# Run the program
-run: all
-	./$(MAIN)
+# Link executable
+$(TARGET): $(OBJECTS)
+	$(NVCC) $(NVCC_FLAGS) $(OBJECTS) -o $@ $(LIBS)
 
 # Clean build files
 clean:
-	rm -rf $(BUILD_DIR) $(MAIN) $(BENCHMARK) roofline_data.csv roofline_model.png
+	rm -rf $(BUILD_DIR) $(TARGET) roofline_data.csv roofline_plot.png
 
-# Dependencies
-$(BUILD_DIR)/main.o: main.cu
-$(BUILD_DIR)/gemms.o: gemms.cu include/gemms.cuh
-$(BUILD_DIR)/utils.o: utils.cu include/utils.cuh
-$(BUILD_DIR)/benchmark.o: benchmark.cu include/benchmark.h include/gemms.cuh include/utils.cuh
+# Force rebuild
+rebuild: clean all
 
-.PHONY: all setup debug profile run clean test_naive test_tiled
+# Test targets
+test: $(TARGET)
+	./$(TARGET) --test=naive --size=512
+
+test-all: $(TARGET)
+	./$(TARGET)
+
+# Debug build
+debug: NVCC_FLAGS += -g -G
+debug: $(TARGET)
+
+# Profile targets
+profile-naive: $(TARGET)
+	ncu --set basic ./$(TARGET) --test=naive --size=1024
+
+profile-tiled: $(TARGET)
+	ncu --set basic ./$(TARGET) --test=tiled --size=1024
+
+profile-cutlass: $(TARGET)
+	ncu --set basic ./$(TARGET) --test=cutlass --size=1024
+
+profile-cublas: $(TARGET)
+	ncu --set basic ./$(TARGET) --test=cublas --size=1024
+
+# Help
+help:
+	@echo "Available targets:"
+	@echo "  all          - Build the project (default)"
+	@echo "  clean        - Remove build files"
+	@echo "  rebuild      - Clean and build"
+	@echo "  test         - Run basic test"
+	@echo "  test-all     - Run all tests"
+	@echo "  debug        - Build with debug symbols"
+	@echo "  profile-*    - Profile specific implementations"
+	@echo ""
+	@echo "Environment variables:"
+	@echo "  CUTLASS_PATH - Path to CUTLASS installation (default: ~/cutlass)"
+
+.PHONY: all clean rebuild test test-all debug help

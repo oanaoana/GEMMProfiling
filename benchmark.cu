@@ -10,12 +10,14 @@
 TestCase available_tests[NUM_TESTS] = {
     {"naive", launch_naive, true},
     {"tiled", launch_tiled, true},
-    {"cublas", launch_cublas, true}
+    {"cublas", launch_cublas, true},
+    {"cublas_tensor", launch_cublas_tensor, true},
+    {"cutlass", launch_cutlass, true}
 };
 
 // Define available sizes
-const int SIZES[] = {256, 512, 1024, 2048};
-const int NUM_SIZES = 4;
+const int SIZES[] = {256, 512, 1024, 2048, 4096};
+const int NUM_SIZES = sizeof(SIZES) / sizeof(SIZES[0]);
 
 // Benchmark function
 void runBenchmark(const char* name, int n, KernelFunc kernel,

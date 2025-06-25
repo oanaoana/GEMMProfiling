@@ -1,7 +1,9 @@
 #pragma once
 #include <cuda_runtime.h>
 
-#define NUM_TESTS 3
+// FIX: Update NUM_TESTS to match your implementations
+#define NUM_TESTS 5  // Was 3, now 5 for: naive, tiled, cublas, cublas_tensor, cutlass
+
 extern const int NUM_SIZES;
 
 typedef void (*KernelFunc)(float*, float*, float*, int, dim3, dim3);
