@@ -26,38 +26,52 @@ void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 t
 
 // Tiled implementation
 __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
+    // Shared memory with bank conflict avoidance (+1 padding)
     __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
     __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
 
-    int row = blockIdx.y * TILE_SIZE + threadIdx.y;
-    int col = blockIdx.x * TILE_SIZE + threadIdx.x;
+    // Thread indices
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x, by = blockIdx.y;
 
+    // Global indices for this thread
+    int row = by * TILE_SIZE + ty;
+    int col = bx * TILE_SIZE + tx;
+
+    // Accumulator - keep in register
     float sum = 0.0f;
     int num_tiles = (N + TILE_SIZE - 1) / TILE_SIZE;
 
+    // Main tiling loop
     for (int t = 0; t < num_tiles; ++t) {
-        // Load A tile (this was correct)
-        int A_col = t * TILE_SIZE + threadIdx.x;
-        tile_A[threadIdx.y][threadIdx.x] = (row < N && A_col < N) ?
-                                          A[row * N + A_col] : 0.0f;
+        // Load tile A - coalesced memory access
+        int A_row = row;
+        int A_col = t * TILE_SIZE + tx;
+        tile_A[ty][tx] = (A_row < N && A_col < N) ? A[A_row * N + A_col] : 0.0f;
 
-        // FIXED: Load B tile correctly
-        int B_row = t * TILE_SIZE + threadIdx.y;  // Use threadIdx.y for row
-        int B_col = col;  // Use the actual column this thread is computing
-        tile_B[threadIdx.y][threadIdx.x] = (B_row < N && B_col < N) ?
-                                          B[B_row * N + B_col] : 0.0f;
+        // Load tile B - coalesced memory access
+        int B_row = t * TILE_SIZE + ty;
+        int B_col = col;
+        tile_B[ty][tx] = (B_row < N && B_col < N) ? B[B_row * N + B_col] : 0.0f;
 
+        // Wait for all threads to finish loading
         __syncthreads();
 
-        // Compute partial result
-        for (int k = 0; k < TILE_SIZE; ++k)
-            sum += tile_A[threadIdx.y][k] * tile_B[k][threadIdx.x];
+        // Compute partial dot product with optimizations
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            // Use fused multiply-add for better performance
+            sum = __fmaf_rn(tile_A[ty][k], tile_B[k][tx], sum);
+        }
 
+        // Wait before loading next tiles
         __syncthreads();
     }
 
-    if (row < N && col < N)
+    // Write result to global memory
+    if (row < N && col < N) {
         C[row * N + col] = sum;
+    }
 }
 
 // Launch wrapper for tiled implementation

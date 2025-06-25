@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
 
     // Default: enable all tests and sizes
     bool enabled_tests[NUM_TESTS] = {true, true, true, true, true}; // All enabled by default
-    bool enabled_sizes[NUM_SIZES] = {true, true, true, true};       // All enabled by default
+    bool enabled_sizes[NUM_SIZES] = {true, true, true, true, true}; // 5 elements: 256,512,1024,2048,4096
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
