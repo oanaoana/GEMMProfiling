@@ -5,6 +5,7 @@
 #include <cuda_profiler_api.h>
 #include <stdlib.h>
 #include "benchmark.h"
+#include "utils.cuh"
 
 void printUsage() {
     printf("Usage: ./main [options]\n\n");
@@ -136,6 +137,9 @@ int main(int argc, char **argv) {
         }
     }
     printf("\n\n");
+
+    // Add the function to check occupancy
+    check_occupancy();
 
     // TEMPORARILY COMMENT OUT THE BENCHMARK CALL
     printf("About to call runAllBenchmarks...\n");

@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 
 // FIX: Update NUM_TESTS to match your implementations
-#define NUM_TESTS 5  // Was 3, now 5 for: naive, tiled, cublas, cublas_tensor, cutlass
+#define NUM_TESTS 6  // Increased from 5 to 6 for the new implementation
 
 extern const int NUM_SIZES;
 

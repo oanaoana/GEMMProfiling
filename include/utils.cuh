@@ -4,3 +4,4 @@
 void fill_matrix(float *mat, int N);
 void verify_result(float *A, float *B, float *C, int N);
 void printDevicePerformanceInfo();
+void check_occupancy();

@@ -1,5 +1,6 @@
 #include "utils.cuh"
 #include <stdio.h>
+#include <gemms.cuh>
 
 void fill_matrix(float *mat, int N) {
     for (int i = 0; i < N * N; ++i) {
@@ -88,4 +89,41 @@ void verify_result(float *A, float *B, float *C, int N) {
 
     if (error_count == 0)
         printf("Result verified: correct within epsilon %e.\n", eps);
+}
+
+
+void check_occupancy() {
+    int device;
+    cudaGetDevice(&device);
+
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device);
+
+    // Check occupancy for different configurations
+    int maxActiveBlocks16, maxActiveBlocks32;
+
+    // For TILE_SIZE=16 (16×16 = 256 threads per block)
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks16,
+                                                  matmul_tiled, 256, 2048);
+
+    // For TILE_SIZE=32 (32×32 = 1024 threads per block)
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks32,
+                                                  matmul_tiled, 1024, 8192);
+
+    printf("=== OCCUPANCY ANALYSIS ===\n");
+    printf("GPU: %s, SMs: %d\n", prop.name, prop.multiProcessorCount);
+    printf("Max threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
+    printf("Max blocks per SM: %d\n", prop.maxBlocksPerMultiProcessor);
+
+    printf("\nTILE_SIZE=16 (256 threads/block, 2KB shared mem):\n");
+    printf("  Max active blocks per SM: %d\n", maxActiveBlocks16);
+    printf("  Threads per SM: %d (%.1f%% occupancy)\n",
+           maxActiveBlocks16 * 256,
+           (maxActiveBlocks16 * 256.0f / prop.maxThreadsPerMultiProcessor) * 100);
+
+    printf("\nTILE_SIZE=32 (1024 threads/block, 8KB shared mem):\n");
+    printf("  Max active blocks per SM: %d\n", maxActiveBlocks32);
+    printf("  Threads per SM: %d (%.1f%% occupancy)\n",
+           maxActiveBlocks32 * 1024,
+           (maxActiveBlocks32 * 1024.0f / prop.maxThreadsPerMultiProcessor) * 100);
 }

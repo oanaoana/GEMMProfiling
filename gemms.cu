@@ -26,6 +26,7 @@ void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 t
 
 // Tiled implementation
 __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
+
     // Shared memory with bank conflict avoidance (+1 padding)
     __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
     __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
@@ -72,11 +73,77 @@ __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
     if (row < N && col < N) {
         C[row * N + col] = sum;
     }
+
 }
 
 // Launch wrapper for tiled implementation
 void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    /* printf("Host debug - tiled launch: n=%d, grid=(%d,%d), block=(%d,%d)\n",
+           n, blocks.x, blocks.y, threads.x, threads.y);
+    printf("Host debug - expected tiles per dim: %d\n", (n + TILE_SIZE - 1) / TILE_SIZE); */
+
     matmul_tiled<<<blocks, threads>>>(d_A, d_B, d_C, n);
+}
+
+// Rectangular tiled implementation
+__global__ void matmul_tiled_rectangular(float *A, float *B, float *C, int N) {
+    // Rectangular shared memory: different K dimension
+    __shared__ float tile_A[TILE_M][TILE_K + 1];    // 16×32
+    __shared__ float tile_B[TILE_K][TILE_N + 1];    // 32×16
+
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x, by = blockIdx.y;
+
+    int row = by * TILE_M + ty;
+    int col = bx * TILE_N + tx;
+
+    float sum = 0.0f;
+    int num_tiles = (N + TILE_K - 1) / TILE_K;      // Different tile count!
+
+    for (int t = 0; t < num_tiles; ++t) {
+        // Load tile A: each thread loads multiple elements
+        for (int k_offset = 0; k_offset < TILE_K; k_offset += BLOCK_N) {
+            int k_idx = k_offset + tx;
+            int A_col = t * TILE_K + k_idx;
+
+            if (k_idx < TILE_K) {
+                tile_A[ty][k_idx] = (row < N && A_col < N) ? A[row * N + A_col] : 0.0f;
+            }
+        }
+
+        // Load tile B: each thread loads multiple elements
+        for (int k_offset = 0; k_offset < TILE_K; k_offset += BLOCK_M) {
+            int k_idx = k_offset + ty;
+            int B_row = t * TILE_K + k_idx;
+
+            if (k_idx < TILE_K) {
+                tile_B[k_idx][tx] = (B_row < N && col < N) ? B[B_row * N + col] : 0.0f;
+            }
+        }
+
+        __syncthreads();
+
+        // Compute: More accumulation steps (32 instead of 16)
+        #pragma unroll
+        for (int k = 0; k < TILE_K; ++k) {
+            sum = __fmaf_rn(tile_A[ty][k], tile_B[k][tx], sum);
+        }
+
+        __syncthreads();
+    }
+
+    if (row < N && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+
+// Launch wrapper for rectangular tiled implementation
+void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Use TILE_M, TILE_N for block dimensions
+    dim3 rect_threads(BLOCK_N, BLOCK_M);
+    dim3 rect_blocks((n + TILE_N - 1) / TILE_N, (n + TILE_M - 1) / TILE_M);
+
+    matmul_tiled_rectangular<<<rect_blocks, rect_threads>>>(d_A, d_B, d_C, n);
 }
 
 // cuBLAS implementation

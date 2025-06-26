@@ -9,7 +9,8 @@
 // Define available tests (must match NUM_TESTS in header)
 TestCase available_tests[NUM_TESTS] = {
     {"naive", launch_naive, true},
-    {"tiled", launch_tiled, true},
+    {"tiled", launch_tiled, true},                    // Square 16×16
+    {"tiled_rect", launch_tiled_rect, true},          // Rectangular 16×32
     {"cublas", launch_cublas, true},
     {"cublas_tensor", launch_cublas_tensor, true},
     {"cutlass", launch_cutlass, true}
@@ -26,20 +27,40 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
                   FILE* dataFile) {
 
     size_t size = n * n * sizeof(float);
-    size_t mem_access = 3 * size; // Read A, Read B, Write C
     double operations = 2.0 * n * n * n; // 2*N^3 FLOPs for matrix multiplication
-    double arithmetic_intensity = operations / mem_access;
+    double mem_access_bytes = 3.0 * n * n * sizeof(float); // 3*N^2 floats read/written
+    double arithmetic_intensity = operations / mem_access_bytes;
 
-    // Set dimensions
-    dim3 threadsPerBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 numBlocks((n + threadsPerBlock.x - 1) / threadsPerBlock.x,
-                   (n + threadsPerBlock.y - 1) / threadsPerBlock.y);
+    // Set dimensions dynamically based on kernel type
+    dim3 threadsPerBlock, numBlocks;
 
-    // For tiled implementation, use TILE_SIZE
-    if (strcmp(name, "tiled") == 0) {
-        threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
-        numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+    if (strcmp(name, "naive") == 0) {
+        // Naive: use BLOCK_SIZE for general purpose blocking
+        threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+        numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                        (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
     }
+    else if (strcmp(name, "tiled") == 0) {
+        // Square tiling: use TILE_SIZE
+        threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
+        numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE,
+                        (n + TILE_SIZE - 1) / TILE_SIZE);
+    }
+    else if (strcmp(name, "tiled_rect") == 0) {
+        // Rectangular tiling: use TILE_M, TILE_N
+        threadsPerBlock = dim3(BLOCK_N, BLOCK_M);  // Note: N,M order for x,y
+        numBlocks = dim3((n + TILE_N - 1) / TILE_N,
+                        (n + TILE_M - 1) / TILE_M);
+    }
+    else {
+        // Default for cuBLAS, CUTLASS, etc.: use BLOCK_SIZE
+        threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+        numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                        (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    }
+
+    printf("Debug %s: Grid(%d,%d), Block(%d,%d)\n",
+           name, numBlocks.x, numBlocks.y, threadsPerBlock.x, threadsPerBlock.y);
 
     // Create CUDA events for timing
     cudaEvent_t start, stop;
@@ -50,27 +71,87 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
     kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
     cudaDeviceSynchronize();
 
-    // Clear result matrix
+    // Clear result matrix with a known pattern
     cudaMemset(d_C, 0, size);
 
-    // Timing run
-    cudaEventRecord(start);
-    kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
+    // Add checksum BEFORE kernel
+    float checksum_before = 0.0f;
+    cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 100; i++) checksum_before += h_C[i];
+    printf("Debug: Checksum before %s: %.6f\n", name, checksum_before);
 
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
+    // WARM-UP RUNS
+    printf("  Warming up...");
+    for (int i = 0; i < 3; i++) {
+        kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+    }
+    cudaDeviceSynchronize();  // Ensure all warm-up runs complete
+    printf(" done\n");
 
-    double gigaFlops = (operations / (milliseconds / 1000.0)) / 1e9;
-    double bandwidth_gbps = (mem_access / (milliseconds / 1000.0)) / 1e9;
+    // MULTIPLE TIMED RUNS
+    int num_runs = (n < 1024) ? 10 : 1;
+    float total_time = 0.0f;
+    float run_times[num_runs];  // Declare array here
+
+    for (int run = 0; run < num_runs; run++) {
+        cudaEventRecord(start);
+
+        // Multiple kernel calls per timing measurement
+        int iterations_per_run = (n < 1024) ? 10 : 1;
+        for (int iter = 0; iter < iterations_per_run; iter++) {
+            kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+        }
+
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+
+        float run_time;
+        cudaEventElapsedTime(&run_time, start, stop);
+        run_time /= iterations_per_run;  // Average per kernel call
+
+        run_times[run] = run_time;  // Store the time
+        total_time += run_time;
+
+        printf("  Run %d: %.2f ms\n", run + 1, run_time);
+    }
+
+    // Use AVERAGE time
+    float average_time = total_time / num_runs;
+    printf("  Average: %.2f ms\n", average_time);
+
+    // Calculate variance (MOVE this to after average_time calculation)
+    float variance = 0.0f;
+    for (int run = 0; run < num_runs; run++) {
+        float diff = run_times[run] - average_time;
+        variance += diff * diff;
+    }
+    variance /= num_runs;
+    float std_dev = sqrtf(variance);
+    float cv = (std_dev / average_time) * 100.0f;
+    printf("  Std dev: %.2f ms (CV: %.1f%%)\n", std_dev, cv);
+
+    // Add checksum AFTER kernel
+    float checksum_after = 0.0f;
+    cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 100; i++) checksum_after += h_C[i];
+    printf("Debug: Checksum after %s: %.6f\n", name, checksum_after);
+
+    // Check for kernel errors
+    cudaError_t kernel_err = cudaGetLastError();
+    if (kernel_err != cudaSuccess) {
+        printf("CUDA Error after %s kernel: %s\n", name, cudaGetErrorString(kernel_err));
+    }
+
+    double gigaFlops = (operations / (average_time / 1000.0)) / 1e9;
+    double bandwidth_gbps = (mem_access_bytes / (average_time / 1000.0)) / 1e9;
 
     printf("%s (N=%d): %.2f ms, %.2f GFLOP/s, %.2f GB/s, AI=%.2f\n",
-           name, n, milliseconds, gigaFlops, bandwidth_gbps, arithmetic_intensity);
+           name, n, average_time, gigaFlops, bandwidth_gbps, arithmetic_intensity);
 
     // Save to CSV
     fprintf(dataFile, "%s,%d,%.2f,%.2f,%.2f,%.2f\n",
-            name, n, milliseconds, gigaFlops, bandwidth_gbps, arithmetic_intensity);
+            name, n, average_time, gigaFlops, bandwidth_gbps, arithmetic_intensity);
+
 
     // Cleanup
     cudaEventDestroy(start);
