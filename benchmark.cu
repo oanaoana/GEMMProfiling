@@ -1,16 +1,25 @@
 #include "benchmark.h"
 #include "gemms.cuh"
-#include "utils.cuh"
+#include "include/utils.cuh"
 #include <stdio.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <math.h>
 
+// Add these global variable definitions to benchmark.cu
+int g_pitch_A = 0;
+int g_pitch_B = 0;
+int g_pitch_C = 0;
+bool g_use_pitched_memory = false;
+
+// Declare extern flag from main.cu
+extern bool g_verify_results;
+
 // Define available tests (must match NUM_TESTS in header)
 TestCase available_tests[NUM_TESTS] = {
     {"naive", launch_naive, true},
-    {"tiled", launch_tiled, true},                    // Square 16×16
-    {"tiled_rect", launch_tiled_rect, true},          // Rectangular 16×32
+    {"tiled", launch_tiled, true},
+    {"tiled_rect", launch_tiled_rect, true},
     {"cublas", launch_cublas, true},
     {"cublas_tensor", launch_cublas_tensor, true},
     {"cutlass", launch_cutlass, true}
@@ -47,10 +56,17 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
                         (n + TILE_SIZE - 1) / TILE_SIZE);
     }
     else if (strcmp(name, "tiled_rect") == 0) {
-        // Rectangular tiling: use TILE_M, TILE_N
-        threadsPerBlock = dim3(BLOCK_N, BLOCK_M);  // Note: N,M order for x,y
-        numBlocks = dim3((n + TILE_N - 1) / TILE_N,
-                        (n + TILE_M - 1) / TILE_M);
+        // Rectangular tiling: use TILE_M, TILE_N for output
+        threadsPerBlock = dim3(BLOCK_N, BLOCK_M);          // (16, 16)
+        numBlocks = dim3((n + TILE_N - 1) / TILE_N,        // (n+15)/16
+                        (n + TILE_M - 1) / TILE_M);        // (n+15)/16
+    }
+    else if (strcmp(name, "cublas") == 0 || strcmp(name, "cublas_tensor") == 0 ||
+             strcmp(name, "cutlass") == 0 || strcmp(name, "cutlass_tensor") == 0) {
+        // For cuBLAS and CUTLASS, use BLOCK_SIZE
+        threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+        numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                        (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
     }
     else {
         // Default for cuBLAS, CUTLASS, etc.: use BLOCK_SIZE
@@ -99,7 +115,12 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
         // Multiple kernel calls per timing measurement
         int iterations_per_run = (n < 1024) ? 10 : 1;
         for (int iter = 0; iter < iterations_per_run; iter++) {
-            kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+            // Force use of pitched version for tiled kernel
+            if (strcmp(name, "tiled_pitch") == 0) {
+                launch_tiled_pitched(d_A, d_B, d_C, n, numBlocks, threadsPerBlock, g_pitch_A);
+            } else {
+                kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+            }
         }
 
         cudaEventRecord(stop);
@@ -160,9 +181,14 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
 
 // Main benchmark function
 void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
+    // Reset pitch info for each benchmark run
+    g_pitch_A = 0;
+    g_pitch_B = 0;
+    g_pitch_C = 0;
+    g_use_pitched_memory = false;
+
     printf("=== Starting Benchmarks ===\n");
 
-    // Open data file for roofline model
     FILE* dataFile = fopen("roofline_data.csv", "w");
     if (!dataFile) {
         printf("ERROR: Could not create roofline_data.csv\n");
@@ -170,15 +196,15 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
     }
     fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
 
-    // Test each matrix size
     for (int i = 0; i < NUM_SIZES; i++) {
         if (!enabled_sizes[i]) continue;
 
         int n = SIZES[i];
         printf("\n--- Testing matrix size %d x %d ---\n", n, n);
 
-        // Allocate host memory
+        // Allocate memory
         size_t size = n * n * sizeof(float);
+
         float *h_A = (float*)malloc(size);
         float *h_B = (float*)malloc(size);
         float *h_C = (float*)malloc(size);
@@ -191,26 +217,23 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
         fill_matrix(h_A, n);
         fill_matrix(h_B, n);
 
-        // Allocate device memory
         float *d_A, *d_B, *d_C;
-        cudaError_t err;
-        err = cudaMalloc(&d_A, size);
-        if (err != cudaSuccess) {
-            printf("ERROR: cudaMalloc d_A failed: %s\n", cudaGetErrorString(err));
-            return;
-        }
-        err = cudaMalloc(&d_B, size);
-        if (err != cudaSuccess) {
-            printf("ERROR: cudaMalloc d_B failed: %s\n", cudaGetErrorString(err));
-            return;
-        }
-        err = cudaMalloc(&d_C, size);
-        if (err != cudaSuccess) {
-            printf("ERROR: cudaMalloc d_C failed: %s\n", cudaGetErrorString(err));
-            return;
-        }
+        g_use_pitched_memory = true;        // Enable pitched mode
 
-        // Copy input data to device
+        size_t pitch_A, pitch_B, pitch_C;
+        cudaMalloc((void**)&d_A, n * n * sizeof(float));
+        cudaMalloc((void**)&d_B, n * n * sizeof(float));
+        cudaMalloc((void**)&d_C, n * n * sizeof(float));
+        pitch_A = n;  // Row-major pitch
+        pitch_B = n;  // Row-major pitch
+        pitch_C = n;  // Row-major pitch
+        //err = cudaMallocPitch((void**)&d_A, &pitch_A, n * sizeof(float), n);
+
+        g_pitch_A = pitch_A / sizeof(float);
+        g_pitch_B = pitch_B / sizeof(float);
+        g_pitch_C = pitch_C / sizeof(float);
+
+        //cudaMemcpy2D(d_A, pitch_A, h_A, n * sizeof(float), n * sizeof(float), n, cudaMemcpyHostToDevice);
         cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
         cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
 
@@ -222,14 +245,16 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
             runBenchmark(available_tests[j].name, n, available_tests[j].kernel,
                          h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
 
-            // Verify results for first size only
-            if (i == 0) {
+            // Clean, simple verification based on runtime flag
+            if (g_verify_results) {
+                printf("\nVerifying results for %s kernel at size %d...\n",
+                       available_tests[j].name, n);
                 cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
                 verify_result(h_A, h_B, h_C, n);
             }
         }
 
-        // Free memory
+        // Free memory (now in correct scope)
         cudaFree(d_A);
         cudaFree(d_B);
         cudaFree(d_C);

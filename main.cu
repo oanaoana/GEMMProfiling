@@ -1,23 +1,40 @@
 // main.cu
 #include <stdio.h>
-#include <string.h>
-#include <cuda_runtime.h>
-#include <cuda_profiler_api.h>
 #include <stdlib.h>
+#include <cuda_runtime.h>
+#include <cuda_profiler_api.h>  // Add this line for profiler functions
+#include <cublas_v2.h>
+#include <curand.h>
+#include <chrono>
+#include <cstring>
+
+#include "include/utils.cuh"
+#include "gemms.cuh"
 #include "benchmark.h"
-#include "utils.cuh"
+
+bool g_enable_verification = false;
+bool g_verify_results = false;  // Default to no verification
 
 void printUsage() {
     printf("Usage: ./main [options]\n\n");
-    printf("Options:\n");
-    printf("  --help           Show this help\n");
-    printf("  --test=NAME      Run only specified test (naive, tiled, cublas)\n");
-    printf("  --size=N         Run only specified matrix size\n");
-    printf("  --all            Run all tests and sizes\n");
+    printf("GEMM Benchmark Options:\n");
+    printf("  --help                Show this help\n");
+    printf("  --test=NAME           Run only specified test (naive, tiled, cublas)\n");
+    printf("  --size=N              Run only specified matrix size\n");
+    printf("  --all                 Run all tests and sizes\n");
+    printf("  --verify              Enable result verification\n");
+    printf("  --no-verify           Disable result verification\n");
+    printf("  --verify=true/false    Verify GEMM results (default: false)\n");
+    printf("\nExamples:\n");
+    printf("  ./main --test=tiled --size=512\n");
 }
 
 int main(int argc, char **argv) {
-    // Add debug mode first
+    // Print CUDA info
+    //printDevicePerformanceInfo();
+    //printCacheInfo();
+    //check_occupancy();
+
     if (argc > 1 && strcmp(argv[1], "--debug") == 0) {
         printf("=== Debug Mode ===\n");
 
@@ -39,13 +56,17 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Default: enable all tests and sizes
-    bool enabled_tests[NUM_TESTS] = {true, true, true, true, true}; // All enabled by default
-    bool enabled_sizes[NUM_SIZES] = {true, true, true, true, true}; // 5 elements: 256,512,1024,2048,4096
+    bool enabled_tests[NUM_TESTS];
+    bool enabled_sizes[NUM_SIZES];
+    // Default: enable all tests
+    for (int i = 0; i < NUM_TESTS; i++) {
+        enabled_tests[i] = true;
+        enabled_sizes[i] = true;
+    }
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--help") == 0) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printUsage();
             return 0;
         } else if (strncmp(argv[i], "--test=", 7) == 0) {
@@ -102,8 +123,20 @@ int main(int argc, char **argv) {
                 printf("\n");
                 return 1;
             }
-        } else if (strcmp(argv[i], "--all") == 0) {
-            // Already enabled all by default
+        } else if (strcmp(argv[i], "--verify") == 0) {
+            g_verify_results = true;
+            printf("Result verification enabled\n");
+        } else if (strcmp(argv[i], "--no-verify") == 0) {
+            g_enable_verification = false;
+        } else if (strncmp(argv[i], "--verify=", 9) == 0) {
+            const char* value = argv[i] + 9;
+            if (strcmp(value, "true") == 0 || strcmp(value, "1") == 0) {
+                g_verify_results = true;
+                printf("Result verification enabled\n");
+            } else {
+                g_verify_results = false;
+                printf("Result verification disabled\n");
+            }
         } else {
             printf("Unknown option: %s\n", argv[i]);
             printUsage();
@@ -137,9 +170,6 @@ int main(int argc, char **argv) {
         }
     }
     printf("\n\n");
-
-    // Add the function to check occupancy
-    check_occupancy();
 
     // TEMPORARILY COMMENT OUT THE BENCHMARK CALL
     printf("About to call runAllBenchmarks...\n");

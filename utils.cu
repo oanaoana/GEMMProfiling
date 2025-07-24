@@ -1,6 +1,7 @@
 #include "utils.cuh"
 #include <stdio.h>
 #include <gemms.cuh>
+#include "benchmark.h"  // For BLOCK_SIZE, TILE_SIZE constants
 
 void fill_matrix(float *mat, int N) {
     for (int i = 0; i < N * N; ++i) {
@@ -126,4 +127,49 @@ void check_occupancy() {
     printf("  Threads per SM: %d (%.1f%% occupancy)\n",
            maxActiveBlocks32 * 1024,
            (maxActiveBlocks32 * 1024.0f / prop.maxThreadsPerMultiProcessor) * 100);
+}
+
+void printCacheInfo() {
+    printf("\n===== DETAILED CACHE ANALYSIS =====\n");
+
+    int value;
+    cudaError_t err;
+
+    // L1 Global Cache
+    err = cudaDeviceGetAttribute(&value, cudaDevAttrGlobalL1CacheSupported, 0);
+    printf("Global L1 Cache Supported: %s\n",
+           (err == cudaSuccess) ? (value ? "YES" : "NO") : "UNKNOWN");
+
+    // L1 Local Cache
+    err = cudaDeviceGetAttribute(&value, cudaDevAttrLocalL1CacheSupported, 0);
+    printf("Local L1 Cache Supported: %s\n",
+           (err == cudaSuccess) ? (value ? "YES" : "NO") : "UNKNOWN");
+
+    // L2 Cache Size
+    err = cudaDeviceGetAttribute(&value, cudaDevAttrL2CacheSize, 0);
+    if (err == cudaSuccess) {
+        printf("L2 Cache Size: %d bytes (%.2f MB)\n", value, value / (1024.0 * 1024.0));
+    }
+
+    // Cache configuration
+    cudaFuncCache cacheConfig;
+    err = cudaDeviceGetCacheConfig(&cacheConfig);
+    if (err == cudaSuccess) {
+        printf("Current cache preference: ");
+        switch(cacheConfig) {
+            case cudaFuncCachePreferNone: printf("No preference\n"); break;
+            case cudaFuncCachePreferShared: printf("Prefer shared memory\n"); break;
+            case cudaFuncCachePreferL1: printf("Prefer L1 cache\n"); break;
+            case cudaFuncCachePreferEqual: printf("Equal L1/shared\n"); break;
+            default: printf("Unknown\n"); break;
+        }
+    }
+
+    // Memory transaction size (cache line related)
+    printf("\nMemory Transaction Analysis:\n");
+    printf("Expected cache line size: 128 bytes (32 floats)\n");
+    printf("Your warp accesses: 32 consecutive floats\n");
+    printf("Theoretical coalescing: PERFECT (1:1 ratio expected)\n");
+
+    printf("=====================================\n\n");
 }
