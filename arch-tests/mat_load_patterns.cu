@@ -1,194 +1,251 @@
-// Memory Load Pattern Analysis for GPU Architecture Testing
+// Memory Access Pattern Tests for GPU Architecture Analysis
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+// Default tile size if not defined
+#ifndef TILE_SIZE
+#define TILE_SIZE 16
+#endif
+
 // Global variables for pitched memory
 int g_pitch_A = 0;
 int g_pitch_C = 0;
 
-// ===== KERNEL FUNCTIONS =====
+// ===== DIRECT MEMORY ACCESS PATTERNS =====
 
-// Row-major copy test kernel (Sequential access pattern)
+// Row-major pattern - simple copy
 __global__ void matrix_copy_test_rowmajor(float *A, float *C, int N, int pitch_A, int pitch_C) {
-    // Calculate global thread ID regardless of 1D/2D/3D block layout
+    // Calculate global thread ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // For 2D blocks, need different calculation
     if (blockDim.y > 1) {
         tid = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x * blockDim.y +
               threadIdx.y * blockDim.x + threadIdx.x;
     }
 
     if (tid < N * N) {
-        // Row-major mapping (independent of thread layout)
+        // Row-major mapping
         int row = tid / N;
         int col = tid % N;
 
-        // if (tid < 32) {
-        //     printf("T%02d: row=%d, col=%d, A_addr=%d\n",
-        //            tid, row, col, row * pitch_A + col);
-        // }
-
+        // Load value with texture cache
         float value = __ldg(&A[row * pitch_A + col]);
+
+        // Store
         C[row * pitch_C + col] = value;
     }
 }
 
-// Column-major copy test kernel (Strided access pattern)
+// Column-major pattern - simple copy
 __global__ void matrix_copy_test_colmajor(float *A, float *C, int N, int pitch_A, int pitch_C) {
-    // Same thread ID calculation
+    // Calculate global thread ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
     if (blockDim.y > 1) {
         tid = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x * blockDim.y +
               threadIdx.y * blockDim.x + threadIdx.x;
     }
 
     if (tid < N * N) {
-        // Column-major mapping (independent of thread layout)
+        // Column-major mapping
         int col = tid / N;
         int row = tid % N;
 
-        // if (tid < 32) {
-        //     printf("T%02d: row=%d, col=%d, A_addr=%d\n",
-        //            tid, row, col, row * pitch_A + col);
-        // }
-
+        // Load value with texture cache
         float value = __ldg(&A[row * pitch_A + col]);
+
+        // Store
         C[row * pitch_C + col] = value;
     }
 }
 
-// Random access pattern kernel (Worst case for coalescing)
+// Random access pattern - simple copy with random mapping
 __global__ void matrix_copy_test_random(float *A, float *C, int N, int pitch_A, int pitch_C) {
+    // Calculate global thread ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (blockDim.y > 1) {
+        tid = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x * blockDim.y +
+              threadIdx.y * blockDim.x + threadIdx.x;
+    }
 
     if (tid < N * N) {
-        // Random access pattern (worst coalescing expected)
-        int row = (tid * 17 + 23) % N;  // Pseudo-random
-        int col = (tid * 31 + 47) % N;
+        // Simple hash function for pseudo-random mapping
+        // Using prime numbers to create a scatter effect
+        int hash = (tid * 1664525 + 1013904223) % (N * N);
+        int row = hash / N;
+        int col = hash % N;
 
-        // if (tid < 32) {
-        //     printf("RND T%02d: row=%d, col=%d, A_addr=%d\n",
-        //            tid, row, col, row * pitch_A + col);
-        // }
-
+        // Load value with texture cache
         float value = __ldg(&A[row * pitch_A + col]);
 
-        // Write to sequential location to avoid write coalescing issues
+        // Store in sequential order
         int out_row = tid / N;
         int out_col = tid % N;
         C[out_row * pitch_C + out_col] = value;
     }
 }
 
+// ===== TILED MEMORY ACCESS PATTERNS =====
+
+// Row-major tiled copy kernel
+__global__ void matrix_copy_tiled_rowmajor(float *A, float *C, int N, int pitch_A, int pitch_C) {
+    // Shared memory tile with padding to avoid bank conflicts
+    __shared__ float tile[TILE_SIZE][TILE_SIZE + 1];
+
+    // Thread indices
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Global indices for this thread
+    int row = by * TILE_SIZE + ty;
+    int col = bx * TILE_SIZE + tx;
+
+    // Load tile using row-major access pattern (coalesced)
+    if (row < N && col < N) {
+        // Row-major loading (threads in the same warp access consecutive memory)
+        tile[ty][tx] = A[row * pitch_A + col];
+    }
+
+    // Make sure all threads finished loading
+    __syncthreads();
+
+    // Store back to global memory using same pattern
+    if (row < N && col < N) {
+        C[row * pitch_C + col] = tile[ty][tx];
+    }
+}
+
+// Column-major tiled copy kernel
+__global__ void matrix_copy_tiled_colmajor(float *A, float *C, int N, int pitch_A, int pitch_C) {
+    // Shared memory tile with padding to avoid bank conflicts
+    __shared__ float tile[TILE_SIZE][TILE_SIZE + 1];
+
+    // Thread indices
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Global indices for this thread
+    int row = by * TILE_SIZE + ty;
+    int col = bx * TILE_SIZE + tx;
+
+    // Load tile using column-major access pattern (non-coalesced)
+    if (row < N && col < N) {
+        // Column-major loading (threads in the same warp access non-consecutive memory)
+        tile[ty][tx] = A[col * pitch_A + row]; // Column-major access
+    }
+
+    // Make sure all threads finished loading
+    __syncthreads();
+
+    // Store back to global memory in row-major order (to see impact of just the loading)
+    if (row < N && col < N) {
+        C[row * pitch_C + col] = tile[ty][tx];
+    }
+}
+
 // ===== LAUNCH FUNCTIONS =====
 
+// Launch non-tiled row-major kernel
 void launch_copy_test_rowmajor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     printf("DEBUG: RowMajor - Grid(%d,%d,%d), Block(%d,%d,%d)\n",
            blocks.x, blocks.y, blocks.z, threads.x, threads.y, threads.z);
 
     matrix_copy_test_rowmajor<<<blocks, threads>>>(d_A, d_C, n, g_pitch_A, g_pitch_C);
     cudaDeviceSynchronize();
+
+    // Check for errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error: %s\n", cudaGetErrorString(err));
+    }
 }
 
+// Launch non-tiled column-major kernel
 void launch_copy_test_colmajor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     printf("DEBUG: ColMajor - Grid(%d,%d,%d), Block(%d,%d,%d)\n",
            blocks.x, blocks.y, blocks.z, threads.x, threads.y, threads.z);
 
     matrix_copy_test_colmajor<<<blocks, threads>>>(d_A, d_C, n, g_pitch_A, g_pitch_C);
     cudaDeviceSynchronize();
+
+    // Check for errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error: %s\n", cudaGetErrorString(err));
+    }
 }
 
+// Launch non-tiled random access kernel
 void launch_copy_test_random(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     printf("DEBUG: Random - Grid(%d,%d,%d), Block(%d,%d,%d)\n",
            blocks.x, blocks.y, blocks.z, threads.x, threads.y, threads.z);
 
     matrix_copy_test_random<<<blocks, threads>>>(d_A, d_C, n, g_pitch_A, g_pitch_C);
     cudaDeviceSynchronize();
+
+    // Check for errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error: %s\n", cudaGetErrorString(err));
+    }
 }
 
-// ===== DEVICE INFO FUNCTIONS =====
+// Launch tiled row-major kernel
+void launch_copy_tiled_rowmajor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    printf("DEBUG: Tiled RowMajor - Grid(%d,%d,%d), Block(%d,%d,%d)\n",
+           blocks.x, blocks.y, blocks.z, threads.x, threads.y, threads.z);
+    printf("Using TILE_SIZE=%d\n", TILE_SIZE);
 
-void printCacheInfo() {
-    printf("\n===== DETAILED CACHE ANALYSIS =====\n");
+    matrix_copy_tiled_rowmajor<<<blocks, threads>>>(d_A, d_C, n, g_pitch_A, g_pitch_C);
+    cudaDeviceSynchronize();
 
-    int value;
-    cudaError_t err;
-
-    // L1 Global Cache
-    err = cudaDeviceGetAttribute(&value, cudaDevAttrGlobalL1CacheSupported, 0);
-    printf("Global L1 Cache Supported: %s\n",
-           (err == cudaSuccess) ? (value ? "YES" : "NO") : "UNKNOWN");
-
-    // L1 Local Cache
-    err = cudaDeviceGetAttribute(&value, cudaDevAttrLocalL1CacheSupported, 0);
-    printf("Local L1 Cache Supported: %s\n",
-           (err == cudaSuccess) ? (value ? "YES" : "NO") : "UNKNOWN");
-
-    // L2 Cache Size
-    err = cudaDeviceGetAttribute(&value, cudaDevAttrL2CacheSize, 0);
-    if (err == cudaSuccess) {
-        printf("L2 Cache Size: %d bytes (%.2f MB)\n", value, value / (1024.0 * 1024.0));
+    // Check for errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error: %s\n", cudaGetErrorString(err));
     }
-
-    // Cache configuration
-    cudaFuncCache cacheConfig;
-    err = cudaDeviceGetCacheConfig(&cacheConfig);
-    if (err == cudaSuccess) {
-        printf("Current cache preference: ");
-        switch(cacheConfig) {
-            case cudaFuncCachePreferNone: printf("No preference\n"); break;
-            case cudaFuncCachePreferShared: printf("Prefer shared memory\n"); break;
-            case cudaFuncCachePreferL1: printf("Prefer L1 cache\n"); break;
-            case cudaFuncCachePreferEqual: printf("Equal L1/shared\n"); break;
-            default: printf("Unknown\n"); break;
-        }
-    }
-
-    // Memory transaction size (cache line related)
-    printf("\nMemory Transaction Analysis:\n");
-    printf("Expected cache line size: 128 bytes (32 floats)\n");
-    printf("Your warp accesses: 32 consecutive floats\n");
-    printf("Theoretical coalescing: PERFECT (1:1 ratio expected)\n");
-
-    printf("=====================================\n\n");
 }
 
+// Launch tiled column-major kernel
+void launch_copy_tiled_colmajor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    printf("DEBUG: Tiled ColMajor - Grid(%d,%d,%d), Block(%d,%d,%d)\n",
+           blocks.x, blocks.y, blocks.z, threads.x, threads.y, threads.z);
+    printf("Using TILE_SIZE=%d\n", TILE_SIZE);
+
+    matrix_copy_tiled_colmajor<<<blocks, threads>>>(d_A, d_C, n, g_pitch_A, g_pitch_C);
+    cudaDeviceSynchronize();
+
+    // Check for errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error: %s\n", cudaGetErrorString(err));
+    }
+}
+
+// Functions for printing device info and cache configuration
 void printDeviceInfo() {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
 
-    printf("\n===== DEVICE INFORMATION =====\n");
     printf("Device: %s\n", prop.name);
     printf("Compute capability: %d.%d\n", prop.major, prop.minor);
-    printf("Multiprocessor count: %d\n", prop.multiProcessorCount);
-    printf("Warp size: %d\n", prop.warpSize);
     printf("Max threads per block: %d\n", prop.maxThreadsPerBlock);
-    printf("Global memory: %.1f GB\n", prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
-
-    // Memory bandwidth calculation
-    double memory_clock_rate = prop.memoryClockRate / 1000000.0; // Convert from kHz to GHz
-    double bus_width = prop.memoryBusWidth;
-    double peak_bandwidth = 2.0 * memory_clock_rate * (bus_width / 8); // GB/s
-
-    printf("Memory clock rate: %.1f GHz\n", memory_clock_rate);
-    printf("Memory bus width: %d bits\n", prop.memoryBusWidth);
-    printf("Peak memory bandwidth: %.2f GB/s\n", peak_bandwidth);
-    printf("===============================\n\n");
+    printf("Max threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
+    printf("Warp size: %d\n", prop.warpSize);
 }
 
-// ===== TEST FRAMEWORK =====
+void printCacheInfo() {
+    int l2_size = 0;
+    cudaDeviceGetAttribute(&l2_size, cudaDevAttrL2CacheSize, 0);
 
-void runLoadPatternTest(const char* pattern_name, void (*launch_func)(float*, float*, float*, int, dim3, dim3),
-                        float* d_A, float* d_C, int N, dim3 blocks, dim3 threads) {
-    printf("=== %s LOAD PATTERN TEST ===\n", pattern_name);
-    printf("Grid: (%d,%d,%d), Block: (%d,%d,%d)\n",
-           blocks.x, blocks.y, blocks.z, threads.x, threads.y, threads.z);
-    printf("Total threads: %d\n", blocks.x * blocks.y * threads.x * threads.y);
+    size_t free, total;
+    cudaMemGetInfo(&free, &total);
 
-    launch_func(d_A, nullptr, d_C, N, blocks, threads);
-    printf("Test completed.\n\n");
+    printf("L2 cache size: %d KB\n", l2_size / 1024);
+    printf("Global memory: %.1f GB (%.1f GB free)\n",
+           total / (1024.0 * 1024.0 * 1024.0), free / (1024.0 * 1024.0 * 1024.0));
 }

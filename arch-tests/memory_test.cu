@@ -6,7 +6,7 @@
 
 // Define default block and tile sizes if not already defined in mat_load_patterns.cu
 #ifndef BLOCK_SIZE
-#define BLOCK_SIZE 8
+#define BLOCK_SIZE 16
 #endif
 
 #ifndef TILE_SIZE
@@ -20,6 +20,9 @@
 int g_block_size = BLOCK_SIZE;
 int g_tile_size = TILE_SIZE;
 
+// Add a new global flag
+bool g_use_pitched_memory = true;  // Default to pitched allocation
+
 void printUsage() {
     printf("Memory Coalescing Test Runner\n");
     printf("Usage: ./memory_test [options]\n\n");
@@ -27,19 +30,22 @@ void printUsage() {
     printf("  --memory-test=N       Run memory coalescing test for NxN matrix\n");
     printf("\nOptional:\n");
     printf("  --help                Show this help\n");
-    printf("  --pattern=PATTERN     Access pattern: rowmajor, colmajor, random (default: rowmajor)\n");
+    printf("  --pattern=PATTERN     Access pattern: rowmajor, colmajor, random, tiled-row, tiled-col (default: rowmajor)\n");
     printf("  --config=CONFIG       Thread config: 1d-tile, 2d-tile, 1d-block, 2d-block (default: 1d-tile)\n");
     printf("  --block-size=SIZE     Override BLOCK_SIZE for block configs (default: %d)\n", BLOCK_SIZE);
     printf("  --tile-size=SIZE      Override TILE_SIZE for tile configs (default: %d)\n", TILE_SIZE);
+    printf("  --no-pitch            Use regular cudaMalloc instead of cudaMallocPitch\n");  // Add this line
     printf("\nThread Configurations:\n");
     printf("  1d-block              1D layout with BLOCK_SIZE*BLOCK_SIZE threads per block\n");
     printf("  1d-tile               1D layout with TILE_SIZE*TILE_SIZE threads per block\n");
     printf("  2d-block              2D layout with (BLOCK_SIZE,BLOCK_SIZE) threads per block\n");
     printf("  2d-tile               2D layout with (TILE_SIZE,TILE_SIZE) threads per block\n");
     printf("\nAccess Patterns:\n");
-    printf("  rowmajor              Sequential memory access (good coalescing expected)\n");
-    printf("  colmajor              Strided memory access (poor coalescing expected)\n");
-    printf("  random                Random memory access (worst coalescing expected)\n");
+    printf("  rowmajor              Direct row-major memory access (good coalescing expected)\n");
+    printf("  colmajor              Direct column-major memory access (poor coalescing expected)\n");
+    printf("  random                Direct random memory access (worst coalescing expected)\n");
+    printf("  tiled-row             Tiled row-major access with shared memory\n");
+    printf("  tiled-col             Tiled column-major access with shared memory\n");
     printf("\nExamples:\n");
     printf("  ./memory_test --memory-test=512\n");
     printf("  ./memory_test --memory-test=512 --pattern=rowmajor --config=1d-tile\n");
@@ -59,6 +65,7 @@ void printUsage() {
 void runSingleMemoryTest(int size, const char* pattern, const char* config) {
     printf("Running %s memory test on %dx%d matrix with %s configuration\n",
            pattern, size, size, config);
+    printf("Memory mode: %s\n", g_use_pitched_memory ? "Pitched (cudaMallocPitch)" : "Regular (cudaMalloc)");
 
     // Allocate and initialize
     float *h_A, *h_C;
@@ -72,13 +79,27 @@ void runSingleMemoryTest(int size, const char* pattern, const char* config) {
         h_A[i] = (float)rand() / RAND_MAX;
     }
 
-    // Use pitched memory allocation (like original)
+    // Use either pitched or regular memory allocation based on flag
     size_t pitch_A, pitch_C;
-    cudaMallocPitch((void**)&d_A, &pitch_A, size * sizeof(float), size);
-    cudaMallocPitch((void**)&d_C, &pitch_C, size * sizeof(float), size);
 
-    cudaMemcpy2D(d_A, pitch_A, h_A, size * sizeof(float),
-                 size * sizeof(float), size, cudaMemcpyHostToDevice);
+    if (g_use_pitched_memory) {
+        // Use pitched memory allocation
+        cudaMallocPitch((void**)&d_A, &pitch_A, size * sizeof(float), size);
+        cudaMallocPitch((void**)&d_C, &pitch_C, size * sizeof(float), size);
+
+        cudaMemcpy2D(d_A, pitch_A, h_A, size * sizeof(float),
+                     size * sizeof(float), size, cudaMemcpyHostToDevice);
+    } else {
+        // Use regular memory allocation
+        cudaMalloc((void**)&d_A, matrix_size);
+        cudaMalloc((void**)&d_C, matrix_size);
+
+        // For regular allocation, pitch equals row size
+        pitch_A = size* sizeof(float);
+        pitch_C = size* sizeof(float);
+
+        cudaMemcpy(d_A, h_A, matrix_size, cudaMemcpyHostToDevice);
+    }
 
     g_pitch_A = pitch_A / sizeof(float);
     g_pitch_C = pitch_C / sizeof(float);
@@ -124,6 +145,52 @@ void runSingleMemoryTest(int size, const char* pattern, const char* config) {
         launch_copy_test_colmajor(d_A, nullptr, d_C, size, chosen_blocks, chosen_threads);
     } else if (strcmp(pattern, "random") == 0) {
         launch_copy_test_random(d_A, nullptr, d_C, size, chosen_blocks, chosen_threads);
+    } else if (strcmp(pattern, "tiled-row") == 0) {
+        // For tiled tests, ensure we're using 2D blocks
+        if (strcmp(config, "1d-block") == 0 || strcmp(config, "1d-tile") == 0) {
+            printf("Warning: Tiled tests require 2D thread blocks. Switching to 2d-%s.\n",
+                   strstr(config, "block") ? "block" : "tile");
+
+            // Force 2D configuration
+            if (strcmp(config, "1d-block") == 0) {
+                chosen_threads = dim3(g_block_size, g_block_size);
+                chosen_blocks = dim3((size + g_block_size - 1) / g_block_size,
+                                     (size + g_block_size - 1) / g_block_size);
+            } else {
+                chosen_threads = dim3(g_tile_size, g_tile_size);
+                chosen_blocks = dim3((size + g_tile_size - 1) / g_tile_size,
+                                     (size + g_tile_size - 1) / g_tile_size);
+            }
+
+            printf("Updated: Grid(%d,%d,%d), Block(%d,%d,%d)\n",
+                   chosen_blocks.x, chosen_blocks.y, chosen_blocks.z,
+                   chosen_threads.x, chosen_threads.y, chosen_threads.z);
+        }
+
+        launch_copy_tiled_rowmajor(d_A, nullptr, d_C, size, chosen_blocks, chosen_threads);
+    } else if (strcmp(pattern, "tiled-col") == 0) {
+        // Same 2D block requirement as above
+        if (strcmp(config, "1d-block") == 0 || strcmp(config, "1d-tile") == 0) {
+            printf("Warning: Tiled tests require 2D thread blocks. Switching to 2d-%s.\n",
+                   strstr(config, "block") ? "block" : "tile");
+
+            // Force 2D configuration
+            if (strcmp(config, "1d-block") == 0) {
+                chosen_threads = dim3(g_block_size, g_block_size);
+                chosen_blocks = dim3((size + g_block_size - 1) / g_block_size,
+                                     (size + g_block_size - 1) / g_block_size);
+            } else {
+                chosen_threads = dim3(g_tile_size, g_tile_size);
+                chosen_blocks = dim3((size + g_tile_size - 1) / g_tile_size,
+                                     (size + g_tile_size - 1) / g_tile_size);
+            }
+
+            printf("Updated: Grid(%d,%d,%d), Block(%d,%d,%d)\n",
+                   chosen_blocks.x, chosen_blocks.y, chosen_blocks.z,
+                   chosen_threads.x, chosen_threads.y, chosen_threads.z);
+        }
+
+        launch_copy_tiled_colmajor(d_A, nullptr, d_C, size, chosen_blocks, chosen_threads);
     } else {
         printf("Unknown pattern: %s\n", pattern);
         goto cleanup;
@@ -143,6 +210,7 @@ int main(int argc, char** argv) {
     int size = 0;
     const char* pattern = "rowmajor";  // Default
     const char* config = "1d-tile";    // Default
+    g_use_pitched_memory = true;       // Default to pitched
 
     // Parse command line arguments - EXACTLY like original main.cu
     for (int i = 1; i < argc; i++) {
@@ -167,6 +235,8 @@ int main(int argc, char** argv) {
                 printf("Error: tile-size must be between 1 and 32\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--no-pitch") == 0) {
+            g_use_pitched_memory = false;  // Disable pitched memory
         } else {
             printf("Unknown option: %s\n", argv[i]);
             printUsage();
