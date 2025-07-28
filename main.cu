@@ -14,6 +14,7 @@
 
 bool g_enable_verification = false;
 bool g_verify_results = false;  // Default to no verification
+bool g_run_numerical_analysis = false;  // New flag for numerical analysis
 
 void printUsage() {
     printf("Usage: ./main [options]\n\n");
@@ -25,8 +26,10 @@ void printUsage() {
     printf("  --verify              Enable result verification\n");
     printf("  --no-verify           Disable result verification\n");
     printf("  --verify=true/false    Verify GEMM results (default: false)\n");
+    printf("  --numerical-analysis  Run numerical analysis of tiling errors\n");
     printf("\nExamples:\n");
     printf("  ./main --test=tiled --size=512\n");
+    printf("  ./main --numerical-analysis --size=1024\n");
 }
 
 int main(int argc, char **argv) {
@@ -137,6 +140,9 @@ int main(int argc, char **argv) {
                 g_verify_results = false;
                 printf("Result verification disabled\n");
             }
+        } else if (strcmp(argv[i], "--numerical-analysis") == 0) {
+            g_run_numerical_analysis = true;
+            printf("Numerical analysis mode enabled\n");
         } else {
             printf("Unknown option: %s\n", argv[i]);
             printUsage();
@@ -178,8 +184,12 @@ int main(int argc, char **argv) {
     // Start profiling if using CUDA profiler
     cudaProfilerStart();
 
-    // Run benchmarks - NOW PROPERLY IMPLEMENTED
-    runAllBenchmarks(enabled_tests, enabled_sizes);
+    // Run benchmarks or numerical analysis
+    if (g_run_numerical_analysis) {
+        runNumericalAnalysisBenchmarks(enabled_sizes);
+    } else {
+        runAllBenchmarks(enabled_tests, enabled_sizes);
+    }
 
     // Stop profiling
     cudaProfilerStop();

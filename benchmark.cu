@@ -1,16 +1,11 @@
 #include "benchmark.h"
 #include "gemms.cuh"
 #include "include/utils.cuh"
+#include "include/numerical_analysis.cuh"
 #include <stdio.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <math.h>
-
-// Add these global variable definitions to benchmark.cu
-int g_pitch_A = 0;
-int g_pitch_B = 0;
-int g_pitch_C = 0;
-bool g_use_pitched_memory = false;
 
 // Declare extern flag from main.cu
 extern bool g_verify_results;
@@ -115,12 +110,7 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
         // Multiple kernel calls per timing measurement
         int iterations_per_run = (n < 1024) ? 10 : 1;
         for (int iter = 0; iter < iterations_per_run; iter++) {
-            // Force use of pitched version for tiled kernel
-            if (strcmp(name, "tiled_pitch") == 0) {
-                launch_tiled_pitched(d_A, d_B, d_C, n, numBlocks, threadsPerBlock, g_pitch_A);
-            } else {
-                kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
-            }
+            kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
         }
 
         cudaEventRecord(stop);
@@ -181,11 +171,6 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
 
 // Main benchmark function
 void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
-    // Reset pitch info for each benchmark run
-    g_pitch_A = 0;
-    g_pitch_B = 0;
-    g_pitch_C = 0;
-    g_use_pitched_memory = false;
 
     printf("=== Starting Benchmarks ===\n");
 
@@ -218,20 +203,10 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
         fill_matrix(h_B, n);
 
         float *d_A, *d_B, *d_C;
-        g_use_pitched_memory = true;        // Enable pitched mode
 
-        size_t pitch_A, pitch_B, pitch_C;
         cudaMalloc((void**)&d_A, n * n * sizeof(float));
         cudaMalloc((void**)&d_B, n * n * sizeof(float));
         cudaMalloc((void**)&d_C, n * n * sizeof(float));
-        pitch_A = n;  // Row-major pitch
-        pitch_B = n;  // Row-major pitch
-        pitch_C = n;  // Row-major pitch
-        //err = cudaMallocPitch((void**)&d_A, &pitch_A, n * sizeof(float), n);
-
-        g_pitch_A = pitch_A / sizeof(float);
-        g_pitch_B = pitch_B / sizeof(float);
-        g_pitch_C = pitch_C / sizeof(float);
 
         //cudaMemcpy2D(d_A, pitch_A, h_A, n * sizeof(float), n * sizeof(float), n, cudaMemcpyHostToDevice);
         cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
@@ -265,4 +240,90 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
 
     fclose(dataFile);
     printf("\nBenchmark complete. Results saved to roofline_data.csv\n");
+}
+
+// New function for numerical analysis benchmarks
+void runNumericalAnalysisBenchmarks(bool* enabled_sizes) {
+    printf("=== Starting Numerical Analysis of Tiled GEMM ===\n");
+
+    FILE* summaryFile = fopen("numerical_analysis_summary.csv", "w");
+    if (!summaryFile) {
+        printf("ERROR: Could not create numerical_analysis_summary.csv\n");
+        return;
+    }
+
+    fprintf(summaryFile, "size,avg_abs_error,max_rel_error,significant_errors,avg_tile_norm_A,avg_tile_norm_B\n");
+
+    for (int i = 0; i < NUM_SIZES; i++) {
+        if (!enabled_sizes[i]) continue;
+
+        int n = SIZES[i];
+        printf("\n--- Analyzing matrix size %d x %d ---\n", n, n);
+
+        size_t size = n * n * sizeof(float);
+
+        // Allocate host memory
+        float *h_A = (float*)malloc(size);
+        float *h_B = (float*)malloc(size);
+
+        if (!h_A || !h_B) {
+            printf("ERROR: Failed to allocate host memory\n");
+            return;
+        }
+
+        // Fill matrices with test data
+        fill_matrix(h_A, n);
+        fill_matrix(h_B, n);
+
+        // Run numerical analysis
+        char output_filename[256];
+        snprintf(output_filename, sizeof(output_filename),
+                "numerical_analysis_n%d_tile%d.dat", n, TILE_SIZE);
+
+        printf("Running detailed numerical analysis...\n");
+        run_numerical_analysis(h_A, h_B, n, output_filename);
+
+        // Test different matrix conditions
+        printf("Testing with different matrix conditions...\n");
+
+        // Test 1: Well-conditioned matrices (identity-like)
+        for (int j = 0; j < n; j++) {
+            for (int k = 0; k < n; k++) {
+                h_A[j * n + k] = (j == k) ? 1.0f : 0.01f;
+                h_B[j * n + k] = (j == k) ? 1.0f : 0.01f;
+            }
+        }
+
+        snprintf(output_filename, sizeof(output_filename),
+                "numerical_analysis_wellcond_n%d_tile%d.dat", n, TILE_SIZE);
+        run_numerical_analysis(h_A, h_B, n, output_filename);
+
+        // Test 2: Ill-conditioned matrices
+        for (int j = 0; j < n; j++) {
+            for (int k = 0; k < n; k++) {
+                h_A[j * n + k] = 1.0f / (1.0f + abs(j - k));  // Hilbert-like matrix
+                h_B[j * n + k] = (float)(j + k + 1);
+            }
+        }
+
+        snprintf(output_filename, sizeof(output_filename),
+                "numerical_analysis_illcond_n%d_tile%d.dat", n, TILE_SIZE);
+        run_numerical_analysis(h_A, h_B, n, output_filename);
+
+        // Test 3: Random matrices (original test case)
+        fill_matrix(h_A, n);
+        fill_matrix(h_B, n);
+
+        snprintf(output_filename, sizeof(output_filename),
+                "numerical_analysis_random_n%d_tile%d.dat", n, TILE_SIZE);
+        run_numerical_analysis(h_A, h_B, n, output_filename);
+
+        // Cleanup
+        free(h_A);
+        free(h_B);
+    }
+
+    fclose(summaryFile);
+    printf("\nNumerical analysis complete. Results saved to numerical_analysis_summary.csv\n");
+    printf("Detailed analysis files: numerical_analysis_*.dat\n");
 }

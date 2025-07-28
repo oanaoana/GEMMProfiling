@@ -23,7 +23,7 @@ endif
 LIBS = -lcublas
 
 # Source files
-SOURCES = main.cu benchmark.cu gemms.cu utils.cu
+SOURCES = main.cu benchmark.cu gemms.cu utils.cu numerical_analysis.cu
 
 # Object files
 OBJECTS = $(SOURCES:%.cu=$(BUILD_DIR)/%.o)

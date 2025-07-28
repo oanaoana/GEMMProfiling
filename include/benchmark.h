@@ -20,6 +20,7 @@ extern TestCase available_tests[NUM_TESTS];
 extern const int SIZES[];
 
 void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes);
+void runNumericalAnalysisBenchmarks(bool* enabled_sizes);
 
 extern bool g_enable_verification;
 
