@@ -1,7 +1,7 @@
-#include "utils.cuh"
+#include "../include/utils.cuh"
 #include <stdio.h>
-#include <gemms.cuh>
-#include "benchmark.h"  // For BLOCK_SIZE, TILE_SIZE constants
+#include "../include/gemms.cuh"
+#include "../include/benchmark.h"  // For BLOCK_SIZE, TILE_SIZE constants
 
 void fill_matrix(float *mat, int N) {
     for (int i = 0; i < N * N; ++i) {

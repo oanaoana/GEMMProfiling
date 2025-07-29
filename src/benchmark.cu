@@ -1,7 +1,7 @@
-#include "benchmark.h"
-#include "gemms.cuh"
-#include "include/utils.cuh"
-#include "include/numerical_analysis.cuh"
+#include "../include/benchmark.h"
+#include "../include/gemms.cuh"
+#include "../include/utils.cuh"
+#include "../include/numerical_analysis.cuh"
 #include <stdio.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -174,9 +174,9 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
 
     printf("=== Starting Benchmarks ===\n");
 
-    FILE* dataFile = fopen("roofline_data.csv", "w");
+    FILE* dataFile = fopen("data/roofline_data.csv", "w");
     if (!dataFile) {
-        printf("ERROR: Could not create roofline_data.csv\n");
+        printf("ERROR: Could not create data/roofline_data.csv\n");
         return;
     }
     fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
@@ -239,7 +239,7 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
     }
 
     fclose(dataFile);
-    printf("\nBenchmark complete. Results saved to roofline_data.csv\n");
+    printf("\nBenchmark complete. Results saved to data/roofline_data.csv\n");
 }
 
 // Note: runNumericalAnalysisBenchmarks has been moved to error_tests.cu

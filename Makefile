@@ -4,6 +4,7 @@ NVCC = nvcc
 # Directories
 INCLUDE_DIR = ./include
 BUILD_DIR = build
+SRC_DIR = src
 
 # CUTLASS support
 CUTLASS_PATH ?= $(HOME)/cutlass
@@ -23,10 +24,10 @@ endif
 LIBS = -lcublas
 
 # Source files
-SOURCES = main.cu benchmark.cu gemms.cu utils.cu numerical_analysis.cu error_tests.cu
+SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/numerical_analysis.cu $(SRC_DIR)/error_tests.cu
 
 # Object files
-OBJECTS = $(SOURCES:%.cu=$(BUILD_DIR)/%.o)
+OBJECTS = $(SOURCES:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.o)
 
 # Target executable
 TARGET = main
@@ -39,7 +40,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # Compile object files
-$(BUILD_DIR)/%.o: %.cu | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cu | $(BUILD_DIR)
 	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
 
 # Link executable
@@ -48,7 +49,7 @@ $(TARGET): $(OBJECTS)
 
 # Clean build files
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) roofline_data.csv roofline_plot.png
+	rm -rf $(BUILD_DIR) $(TARGET) data/*.csv data/*.dat roofline_plot.png
 
 # Force rebuild
 rebuild: clean all

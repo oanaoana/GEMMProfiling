@@ -1,7 +1,7 @@
 // numerical_analysis.cu - Round-off error analysis for tiled GEMM
-#include "numerical_analysis.cuh"
-#include "include/gemms.cuh"
-#include "include/utils.cuh"
+#include "../include/numerical_analysis.cuh"
+#include "../include/gemms.cuh"
+#include "../include/utils.cuh"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <math.h>
@@ -305,7 +305,7 @@ void compare_tile_sizes(float* h_A, float* h_B, int n) {
         // Note: This would require runtime tile size configuration
         // For now, just report current TILE_SIZE analysis
         char filename[256];
-        snprintf(filename, sizeof(filename), "numerical_analysis_tile%d_n%d.dat", TILE_SIZE, n);
+        snprintf(filename, sizeof(filename), "data/numerical_analysis_tile%d_n%d.dat", TILE_SIZE, n);
         run_numerical_analysis(h_A, h_B, n, filename);
     }
 }

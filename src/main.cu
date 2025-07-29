@@ -8,10 +8,10 @@
 #include <chrono>
 #include <cstring>
 
-#include "include/utils.cuh"
-#include "gemms.cuh"
-#include "benchmark.h"
-#include "include/error_tests.cuh"
+#include "../include/utils.cuh"
+#include "../include/gemms.cuh"
+#include "../include/benchmark.h"
+#include "../include/error_tests.cuh"
 
 bool g_enable_verification = false;
 bool g_verify_results = false;  // Default to no verification

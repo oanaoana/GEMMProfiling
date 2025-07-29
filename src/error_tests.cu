@@ -1,9 +1,9 @@
 // error_tests.cu - Numerical error analysis tests for GEMM implementations
-#include "include/error_tests.cuh"
-#include "benchmark.h"
-#include "include/gemms.cuh"
-#include "include/utils.cuh"
-#include "include/numerical_analysis.cuh"
+#include "../include/error_tests.cuh"
+#include "../include/benchmark.h"
+#include "../include/gemms.cuh"
+#include "../include/utils.cuh"
+#include "../include/numerical_analysis.cuh"
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
@@ -101,7 +101,7 @@ void runMatrixTests(int n, MatrixTestConfig* configs, int num_configs) {
         // Generate output filename
         char output_filename[256];
         snprintf(output_filename, sizeof(output_filename),
-                "numerical_analysis_%s_n%d_tile%d.dat", configs[i].name, n, TILE_SIZE);
+                "data/numerical_analysis_%s_n%d_tile%d.dat", configs[i].name, n, TILE_SIZE);
 
         printf("Running numerical analysis for %s...\n", configs[i].name);
         run_numerical_analysis(h_A, h_B, n, output_filename);
@@ -116,9 +116,9 @@ void runMatrixTests(int n, MatrixTestConfig* configs, int num_configs) {
 void generateReport(bool* enabled_sizes) {
     printf("\n=== Generating Numerical Analysis Report ===\n");
 
-    FILE* summaryFile = fopen("numerical_analysis_summary.csv", "w");
+    FILE* summaryFile = fopen("data/numerical_analysis_summary.csv", "w");
     if (!summaryFile) {
-        printf("ERROR: Could not create numerical_analysis_summary.csv\n");
+        printf("ERROR: Could not create data/numerical_analysis_summary.csv\n");
         return;
     }
 
@@ -130,7 +130,7 @@ void generateReport(bool* enabled_sizes) {
     printf("Summary will include analysis from all generated .dat files\n");
 
     fclose(summaryFile);
-    printf("Report saved to: numerical_analysis_summary.csv\n");
+    printf("Report saved to: data/numerical_analysis_summary.csv\n");
 }
 
 // Main function for numerical analysis benchmarks - now refactored
@@ -161,6 +161,6 @@ void runNumericalAnalysisBenchmarks(bool* enabled_sizes) {
     generateReport(enabled_sizes);
 
     printf("\nNumerical analysis complete!\n");
-    printf("Individual test results: numerical_analysis_*.dat\n");
-    printf("Summary report: numerical_analysis_summary.csv\n");
+    printf("Individual test results: data/numerical_analysis_*.dat\n");
+    printf("Summary report: data/numerical_analysis_summary.csv\n");
 }
