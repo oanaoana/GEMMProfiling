@@ -19,18 +19,55 @@ __device__ float compute_frobenius_norm_tile(float* tile, int rows, int cols) {
     return sqrtf(norm_sq);
 }
 
-__device__ float estimate_condition_number_2x2(float* tile) {
-    // For 2x2 matrix [[a,b],[c,d]], compute condition number
-    float a = tile[0], b = tile[1], c = tile[2], d = tile[3];
-    float det = a * d - b * c;
+__device__ float estimate_condition_number_tile(float* tile, int rows, int cols) {
+    // Estimate condition number using Frobenius norm and power iteration for largest singular value
+    // For square tiles, we can estimate ||A|| * ||A^-1|| approximately
 
-    if (fabsf(det) < 1e-10f) return 1e10f; // Near singular
+    // First compute Frobenius norm of the tile
+    float frobenius_norm = 0.0f;
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            float val = tile[i * cols + j];
+            frobenius_norm += val * val;
+        }
+    }
+    frobenius_norm = sqrtf(frobenius_norm);
 
-    // Frobenius norms
-    float norm_A = sqrtf(a*a + b*b + c*c + d*d);
-    float norm_inv = sqrtf(d*d + b*b + c*c + a*a) / (det * det);
+    if (frobenius_norm < 1e-12f) return 1e12f; // Near-zero matrix
 
-    return norm_A * norm_inv;
+    // For non-square tiles, return a scaled Frobenius norm as approximation
+    if (rows != cols) {
+        return frobenius_norm * sqrtf((float)(rows + cols));
+    }
+
+    // For square tiles, estimate condition number using iterative method
+    // Approximate largest eigenvalue using power iteration (simplified)
+    float max_eigenval = 0.0f;
+    float min_eigenval = 1e12f;
+
+    // Simple approximation: use diagonal dominance and row sums
+    for (int i = 0; i < rows; i++) {
+        float row_sum = 0.0f;
+        float diag_val = fabsf(tile[i * cols + i]);
+
+        for (int j = 0; j < cols; j++) {
+            row_sum += fabsf(tile[i * cols + j]);
+        }
+
+        // Gershgorin circle estimation
+        float radius = row_sum - diag_val;
+        float upper_bound = diag_val + radius;
+        float lower_bound = fmaxf(diag_val - radius, 1e-12f);
+
+        max_eigenval = fmaxf(max_eigenval, upper_bound);
+        min_eigenval = fminf(min_eigenval, lower_bound);
+    }
+
+    // Condition number approximation
+    float condition_estimate = max_eigenval / min_eigenval;
+
+    // Clamp to reasonable bounds
+    return fminf(condition_estimate, 1e10f);
 }
 
 // Kernel to analyze round-off errors during tiled GEMM
@@ -74,9 +111,17 @@ __global__ void analyze_tiled_gemm_errors(
             float norm_A = compute_frobenius_norm_tile((float*)tile_A, TILE_SIZE, TILE_SIZE);
             float norm_B = compute_frobenius_norm_tile((float*)tile_B, TILE_SIZE, TILE_SIZE);
 
+            // Compute condition numbers for the tiles
+            float cond_A = estimate_condition_number_tile((float*)tile_A, TILE_SIZE, TILE_SIZE);
+            float cond_B = estimate_condition_number_tile((float*)tile_B, TILE_SIZE, TILE_SIZE);
+
             // Store norms (using atomic add for accumulation across tiles)
             atomicAdd(&tile_norms[tile_idx * 2], norm_A);
             atomicAdd(&tile_norms[tile_idx * 2 + 1], norm_B);
+
+            // Store condition numbers (using atomic add for averaging later)
+            atomicAdd(&tile_condition_numbers[tile_idx * 2], cond_A);
+            atomicAdd(&tile_condition_numbers[tile_idx * 2 + 1], cond_B);
         }
 
         // Compute partial dot product with error tracking
@@ -125,6 +170,8 @@ void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_fi
     size_t size = n * n * sizeof(float);
     size_t tile_data_size = ((n + TILE_SIZE - 1) / TILE_SIZE) *
                            ((n + TILE_SIZE - 1) / TILE_SIZE) * 2 * sizeof(float);
+    size_t condition_data_size = ((n + TILE_SIZE - 1) / TILE_SIZE) *
+                                ((n + TILE_SIZE - 1) / TILE_SIZE) * 2 * sizeof(float);
 
     // Allocate device memory
     float *d_A, *d_B, *d_C_tiled, *d_C_reference;
@@ -136,7 +183,7 @@ void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_fi
     cudaMalloc(&d_C_tiled, size);
     cudaMalloc(&d_C_reference, size);
     cudaMalloc(&d_tile_norms, tile_data_size);
-    cudaMalloc(&d_condition_numbers, tile_data_size / 2);
+    cudaMalloc(&d_condition_numbers, condition_data_size);
     cudaMalloc(&d_accumulated_errors, size * 3); // abs, rel, accumulated
     cudaMalloc(&d_error_counts, sizeof(int));
 
@@ -146,7 +193,7 @@ void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_fi
 
     // Initialize arrays
     cudaMemset(d_tile_norms, 0, tile_data_size);
-    cudaMemset(d_condition_numbers, 0, tile_data_size / 2);
+    cudaMemset(d_condition_numbers, 0, condition_data_size);
     cudaMemset(d_accumulated_errors, 0, size * 3);
     cudaMemset(d_error_counts, 0, sizeof(int));
 
@@ -170,25 +217,27 @@ void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_fi
 
     // Retrieve results
     float *h_tile_norms = (float*)malloc(tile_data_size);
+    float *h_condition_numbers = (float*)malloc(condition_data_size);
     float *h_accumulated_errors = (float*)malloc(size * 3);
     int h_error_count;
 
     cudaMemcpy(h_tile_norms, d_tile_norms, tile_data_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_condition_numbers, d_condition_numbers, condition_data_size, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_accumulated_errors, d_accumulated_errors, size * 3, cudaMemcpyDeviceToHost);
     cudaMemcpy(&h_error_count, d_error_counts, sizeof(int), cudaMemcpyDeviceToHost);
 
     // Analyze and report results
-    analyze_numerical_results(h_tile_norms, h_accumulated_errors, n, h_error_count, output_filename);
+    analyze_numerical_results(h_tile_norms, h_condition_numbers, h_accumulated_errors, n, h_error_count, output_filename);
 
     // Cleanup
     cudaFree(d_A); cudaFree(d_B); cudaFree(d_C_tiled); cudaFree(d_C_reference);
     cudaFree(d_tile_norms); cudaFree(d_condition_numbers); cudaFree(d_accumulated_errors);
     cudaFree(d_error_counts);
-    free(h_tile_norms); free(h_accumulated_errors);
+    free(h_tile_norms); free(h_condition_numbers); free(h_accumulated_errors);
 }
 
 // Host function to analyze and report numerical results
-void analyze_numerical_results(float* tile_norms, float* errors, int n, int error_count, const char* filename) {
+void analyze_numerical_results(float* tile_norms, float* condition_numbers, float* errors, int n, int error_count, const char* filename) {
     FILE* fp = fopen(filename, "w");
     if (!fp) {
         printf("ERROR: Cannot create output file %s\n", filename);
@@ -201,6 +250,17 @@ void analyze_numerical_results(float* tile_norms, float* errors, int n, int erro
     double total_abs_error = 0.0;
     double max_rel_error = 0.0;
     double total_accumulated_error = 0.0;
+
+    // Calculate average condition numbers for tiles
+    int num_tiles = ((n + TILE_SIZE - 1) / TILE_SIZE) * ((n + TILE_SIZE - 1) / TILE_SIZE);
+    double avg_condition_A = 0.0, avg_condition_B = 0.0;
+
+    for (int t = 0; t < num_tiles; t++) {
+        avg_condition_A += condition_numbers[t * 2];
+        avg_condition_B += condition_numbers[t * 2 + 1];
+    }
+    avg_condition_A /= num_tiles;
+    avg_condition_B /= num_tiles;
 
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
@@ -219,12 +279,14 @@ void analyze_numerical_results(float* tile_norms, float* errors, int n, int erro
 
     fclose(fp);
 
-    // Print summary statistics
+    // Print summary statistics including condition numbers
     printf("\n--- Error Analysis Summary ---\n");
     printf("Total elements with significant errors: %d / %d\n", error_count, n * n);
     printf("Average absolute error: %.10e\n", total_abs_error / (n * n));
     printf("Maximum relative error: %.10e\n", max_rel_error);
     printf("Average accumulated error: %.10e\n", total_accumulated_error / (n * n));
+    printf("Average condition number (tiles A): %.2e\n", avg_condition_A);
+    printf("Average condition number (tiles B): %.2e\n", avg_condition_B);
     printf("Results saved to: %s\n", filename);
 }
 

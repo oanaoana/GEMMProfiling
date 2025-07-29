@@ -5,18 +5,18 @@
 // Function declarations for numerical analysis
 __global__ void analyze_tiled_gemm_errors(
     float *A, float *B, float *C_result, float *C_reference,
-    int N, 
+    int N,
     float *tile_norms, float *tile_condition_numbers,
     float *accumulated_errors, int *error_counts);
 
 // Host functions
 void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_filename);
-void analyze_numerical_results(float* tile_norms, float* errors, int n, int error_count, const char* filename);
+void analyze_numerical_results(float* tile_norms, float* condition_numbers, float* errors, int n, int error_count, const char* filename);
 void compare_tile_sizes(float* h_A, float* h_B, int n);
 
 // Device utility functions
 __device__ float compute_frobenius_norm_tile(float* tile, int rows, int cols);
-__device__ float estimate_condition_number_2x2(float* tile);
+__device__ float estimate_condition_number_tile(float* tile, int rows, int cols);
 
 // Analysis configuration
 #define MAX_CONDITION_NUMBER 1e10f
@@ -26,7 +26,8 @@ __device__ float estimate_condition_number_2x2(float* tile);
 typedef struct {
     double total_absolute_error;
     double max_relative_error;
-    double average_condition_number;
+    double average_condition_number_A;
+    double average_condition_number_B;
     int significant_error_count;
     double frobenius_norm_A;
     double frobenius_norm_B;

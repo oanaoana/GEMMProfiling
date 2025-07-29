@@ -11,6 +11,7 @@
 #include "include/utils.cuh"
 #include "gemms.cuh"
 #include "benchmark.h"
+#include "include/error_tests.cuh"
 
 bool g_enable_verification = false;
 bool g_verify_results = false;  // Default to no verification
