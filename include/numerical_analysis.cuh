@@ -18,6 +18,9 @@ void compare_tile_sizes(float* h_A, float* h_B, int n);
 __device__ float compute_frobenius_norm_tile(float* tile, int rows, int cols);
 __device__ float estimate_condition_number_tile(float* tile, int rows, int cols);
 
+// Matrix standardization
+void standardize_matrix_host(float* h_matrix, int n);
+
 // Analysis configuration
 #define MAX_CONDITION_NUMBER 1e10f
 #define SIGNIFICANT_ERROR_THRESHOLD 1e-6f

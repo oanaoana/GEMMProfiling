@@ -7,6 +7,12 @@
 #include <math.h>
 #include <stdio.h>
 
+// Configuration flag for matrix standardization
+// When enabled, matrices A and B are divided by their respective Frobenius norms
+// before error analysis. This standardizes the matrices to have unit Frobenius norm.
+// Set to 0 to disable standardization and work with original matrices.
+#define ENABLE_MATRIX_STANDARDIZATION 1  // Set to 0 to disable standardization
+
 // Device functions for numerical analysis
 __device__ float compute_frobenius_norm_tile(float* tile, int rows, int cols) {
     float norm_sq = 0.0f;
@@ -68,6 +74,27 @@ __device__ float estimate_condition_number_tile(float* tile, int rows, int cols)
 
     // Clamp to reasonable bounds
     return fminf(condition_estimate, 1e10f);
+}
+
+// Host function to standardize a matrix (A = A / ||A||_F) in place
+void standardize_matrix_host(float* h_matrix, int n) {
+    // Compute Frobenius norm on host
+    double norm_sq = 0.0;
+    for (int i = 0; i < n * n; i++) {
+        double val = h_matrix[i];
+        norm_sq += val * val;
+    }
+    double norm = sqrt(norm_sq);
+
+    if (norm > 1e-12) {
+        // Standardize in place
+        for (int i = 0; i < n * n; i++) {
+            h_matrix[i] /= norm;
+        }
+        printf("Matrix standardized: Frobenius norm was %.6e\n", norm);
+    } else {
+        printf("Warning: Matrix has very small Frobenius norm (%.6e), skipping standardization\n", norm);
+    }
 }
 
 // Kernel to analyze round-off errors during tiled GEMM
@@ -166,6 +193,17 @@ __global__ void analyze_tiled_gemm_errors(
 void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_filename) {
     printf("\n=== Numerical Analysis of Tiled GEMM ===\n");
     printf("Matrix size: %d x %d\n", n, n);
+
+#if ENABLE_MATRIX_STANDARDIZATION
+    // Standardize matrices on host before analysis (A = A/||A||_F, B = B/||B||_F)
+    // This ensures both matrices have unit Frobenius norm for normalized error analysis
+    printf("Standardizing matrix A on host...\n");
+    standardize_matrix_host(h_A, n);
+    printf("Standardizing matrix B on host...\n");
+    standardize_matrix_host(h_B, n);
+#else
+    printf("Matrix standardization disabled - using original matrices.\n");
+#endif
 
     size_t size = n * n * sizeof(float);
     size_t tile_data_size = ((n + TILE_SIZE - 1) / TILE_SIZE) *

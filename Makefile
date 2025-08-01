@@ -21,10 +21,10 @@ else
 endif
 
 # Libraries
-LIBS = -lcublas
+LIBS = -lcublas -lcusolver -lcurand
 
 # Source files
-SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/numerical_analysis.cu $(SRC_DIR)/error_tests.cu
+SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/numerical_analysis.cu $(SRC_DIR)/error_tests.cu $(SRC_DIR)/generate_test_matrix.cu
 
 # Object files
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.o)
@@ -39,17 +39,21 @@ all: $(TARGET)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+# Create data directory
+data:
+	mkdir -p data
+
 # Compile object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cu | $(BUILD_DIR)
 	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
 
 # Link executable
-$(TARGET): $(OBJECTS)
+$(TARGET): $(OBJECTS) | data
 	$(NVCC) $(NVCC_FLAGS) $(OBJECTS) -o $@ $(LIBS)
 
 # Clean build files
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) data/*.csv data/*.dat roofline_plot.png
+	rm -rf $(BUILD_DIR) $(TARGET) data/*.csv data/*.dat data/*.bin roofline_plot.png
 
 # Force rebuild
 rebuild: clean all
@@ -92,4 +96,4 @@ help:
 	@echo "Environment variables:"
 	@echo "  CUTLASS_PATH - Path to CUTLASS installation (default: ~/cutlass)"
 
-.PHONY: all clean rebuild test test-all debug help
+.PHONY: all clean rebuild test test-all debug help data

@@ -1,74 +1,29 @@
 // error_tests.cu - Numerical error analysis tests for GEMM implementations
+//
+// Matrix Generation and Caching System:
+// - Matrices are automatically generated and cached in binary format in the data/ folder
+// - First time: matrix is generated and saved to data/matrix_<type>_<size>x<size>.bin
+// - Subsequent times: matrix is loaded from cache (much faster)
+// - Supports multiple matrix types: random, well-conditioned, ill-conditioned, identity, hilbert, custom
+// - Custom matrix generation algorithms can be easily added to generate_test_matrix.cu
+//
 #include "../include/error_tests.cuh"
 #include "../include/benchmark.h"
 #include "../include/gemms.cuh"
 #include "../include/utils.cuh"
 #include "../include/numerical_analysis.cuh"
+#include "../include/generate_test_matrix.cuh"
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
 #include <string.h>
 
-// Setup matrix data based on type
+// Setup matrix data based on type - now uses cached matrix generation
 void setupMatrix(float* matrix, int n, MatrixType type, const char* filename) {
-    switch (type) {
-        case MATRIX_RANDOM:
-            fill_matrix(matrix, n);
-            break;
-
-        case MATRIX_WELL_CONDITIONED:
-            // Identity-like matrix
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < n; j++) {
-                    matrix[i * n + j] = (i == j) ? 1.0f : 0.01f;
-                }
-            }
-            break;
-
-        case MATRIX_ILL_CONDITIONED:
-            // Hilbert-like matrix
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < n; j++) {
-                    matrix[i * n + j] = 1.0f / (1.0f + abs(i - j));
-                }
-            }
-            break;
-
-        case MATRIX_IDENTITY:
-            // Pure identity matrix
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < n; j++) {
-                    matrix[i * n + j] = (i == j) ? 1.0f : 0.0f;
-                }
-            }
-            break;
-
-        case MATRIX_HILBERT:
-            // True Hilbert matrix
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < n; j++) {
-                    matrix[i * n + j] = 1.0f / (float)(i + j + 1);
-                }
-            }
-            break;
-
-        case MATRIX_FROM_FILE:
-            // TODO: Implement matrix loading from file
-            printf("Loading matrix from file: %s\n", filename ? filename : "unknown");
-            // For now, fall back to random
-            fill_matrix(matrix, n);
-            break;
-
-        case MATRIX_CUSTOM:
-            // Placeholder for custom matrix generation
-            // For now, fall back to random
-            fill_matrix(matrix, n);
-            break;
-
-        default:
-            printf("Unknown matrix type, using random\n");
-            fill_matrix(matrix, n);
-            break;
+    if (!get_matrix(matrix, n, type, filename)) {
+        printf("ERROR: Failed to setup matrix of type %d\n", (int)type);
+        printf("Falling back to random matrix generation\n");
+        fill_matrix(matrix, n);
     }
 }
 
@@ -95,8 +50,13 @@ void runMatrixTests(int n, MatrixTestConfig* configs, int num_configs) {
         printf("Description: %s\n", configs[i].description);
 
         // Setup matrices according to configuration
+        printf("Setting up matrix A...\n");
         setupMatrix(h_A, n, configs[i].type_A, configs[i].filename_A);
+        print_matrix_stats(h_A, n, "A");
+
+        printf("Setting up matrix B...\n");
         setupMatrix(h_B, n, configs[i].type_B, configs[i].filename_B);
+        print_matrix_stats(h_B, n, "B");
 
         // Generate output filename
         char output_filename[256];
