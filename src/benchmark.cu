@@ -1,7 +1,7 @@
 #include "../include/benchmark.h"
 #include "../include/gemms.cuh"
 #include "../include/utils.cuh"
-#include "../include/numerical_analysis.cuh"
+#include "../include/error_analysis.cuh"
 #include <stdio.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -20,10 +20,6 @@ TestCase available_tests[NUM_TESTS] = {
     {"cutlass", launch_cutlass, true}
 };
 
-// Define available sizes
-const int SIZES[] = {256, 512, 1024, 2048, 4096};
-const int NUM_SIZES = sizeof(SIZES) / sizeof(SIZES[0]);
-
 // Benchmark function
 void runBenchmark(const char* name, int n, KernelFunc kernel,
                   float* h_A, float* h_B, float* h_C,
@@ -35,40 +31,9 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
     double mem_access_bytes = 3.0 * n * n * sizeof(float); // 3*N^2 floats read/written
     double arithmetic_intensity = operations / mem_access_bytes;
 
-    // Set dimensions dynamically based on kernel type
+    // Compute dimensions using efficient template-based config function
     dim3 threadsPerBlock, numBlocks;
-
-    if (strcmp(name, "naive") == 0) {
-        // Naive: use BLOCK_SIZE for general purpose blocking
-        threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
-        numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                        (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
-    }
-    else if (strcmp(name, "tiled") == 0) {
-        // Square tiling: use TILE_SIZE
-        threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
-        numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE,
-                        (n + TILE_SIZE - 1) / TILE_SIZE);
-    }
-    else if (strcmp(name, "tiled_rect") == 0) {
-        // Rectangular tiling: use TILE_M, TILE_N for output
-        threadsPerBlock = dim3(BLOCK_N, BLOCK_M);          // (16, 16)
-        numBlocks = dim3((n + TILE_N - 1) / TILE_N,        // (n+15)/16
-                        (n + TILE_M - 1) / TILE_M);        // (n+15)/16
-    }
-    else if (strcmp(name, "cublas") == 0 || strcmp(name, "cublas_tensor") == 0 ||
-             strcmp(name, "cutlass") == 0 || strcmp(name, "cutlass_tensor") == 0) {
-        // For cuBLAS and CUTLASS, use BLOCK_SIZE
-        threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
-        numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                        (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
-    }
-    else {
-        // Default for cuBLAS, CUTLASS, etc.: use BLOCK_SIZE
-        threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
-        numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                        (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
-    }
+    compute_dimensions(name, n, &threadsPerBlock, &numBlocks);
 
     printf("Debug %s: Grid(%d,%d), Block(%d,%d)\n",
            name, numBlocks.x, numBlocks.y, threadsPerBlock.x, threadsPerBlock.y);

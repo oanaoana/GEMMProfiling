@@ -1,10 +1,9 @@
 #pragma once
 #include <cuda_runtime.h>
+#include "config.h"  // For SIZES and NUM_SIZES
 
 // FIX: Update NUM_TESTS to match your implementations
 #define NUM_TESTS 8 // Increase from 6 to 8
-
-extern const int NUM_SIZES;
 
 typedef void (*KernelFunc)(float*, float*, float*, int, dim3, dim3);
 typedef void (*KernelFuncPitched)(float*, float*, float*, int, dim3, dim3, int);
@@ -17,7 +16,6 @@ typedef struct {
 } TestCase;
 
 extern TestCase available_tests[NUM_TESTS];
-extern const int SIZES[];
 
 void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes);
 void runNumericalAnalysisBenchmarks(bool* enabled_sizes);

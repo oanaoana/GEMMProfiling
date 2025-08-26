@@ -77,14 +77,22 @@ __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
     }
 }
 
-// Launch wrapper for tiled implementation
-void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
-    // For now, assume regular allocation (no pitch)
-    matmul_tiled<<<blocks, threads>>>(d_A, d_B, d_C, n);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+// Launch wrapper for tiled implementation with config
+void launch_tiled_config(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads, TileConfig* tiles) {
+    if (tiles->tile_m == tiles->tile_n) {
+        // Square tiling - use optimized square kernel
+        int shared_size = 2 * tiles->tile_m * tiles->tile_m * sizeof(float);
+        matmul_tiled_square<<<blocks, threads, shared_size>>>(d_A, d_B, d_C, n, tiles->tile_m);
+    } else {
+        // Rectangular tiling - use existing rectangular kernel
+        matmul_tiled_rectangular<<<blocks, threads>>>(d_A, d_B, d_C, n);
     }
+}
+
+// Launch wrapper for tiled implementation with consistent signature
+void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Use compile-time constants for fixed tiling
+    matmul_tiled<<<blocks, threads>>>(d_A, d_B, d_C, n);
 }
 
 // CORRECTED rectangular tiled implementation
@@ -282,4 +290,55 @@ void launch_cutlass_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 block
     printf("CUTLASS Tensor Core version requires FP16 input conversion\n");
     // Fall back to regular CUTLASS
     launch_cutlass(d_A, d_B, d_C, n, blocks, threads);
+}
+
+// Square tiled implementation with dynamic shared memory
+__global__ void matmul_tiled_square(float *A, float *B, float *C, int N, int tile_size) {
+    // Use dynamic shared memory or template parameter
+    extern __shared__ float shared_mem[];
+    float* tile_A = shared_mem;                           // [tile_size][tile_size]
+    float* tile_B = &shared_mem[tile_size * tile_size];   // [tile_size][tile_size]
+
+    // Thread indices
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x, by = blockIdx.y;
+
+    // Global indices for this thread
+    int row = by * tile_size + ty;
+    int col = bx * tile_size + tx;
+
+    // Accumulator - keep in register
+    float sum = 0.0f;
+    int num_tiles = (N + tile_size - 1) / tile_size;
+
+    // Main tiling loop
+    for (int t = 0; t < num_tiles; ++t) {
+        // Load tile A - coalesced memory access
+        int A_row = row;
+        int A_col = t * tile_size + tx;
+        tile_A[ty * tile_size + tx] = (A_row < N && A_col < N) ? A[A_row * N + A_col] : 0.0f;
+
+        // Load tile B - coalesced memory access
+        int B_row = t * tile_size + ty;
+        int B_col = col;
+        tile_B[ty * tile_size + tx] = (B_row < N && B_col < N) ? B[B_row * N + B_col] : 0.0f;
+
+        // Wait for all threads to finish loading
+        __syncthreads();
+
+        // Compute partial dot product with optimizations
+        #pragma unroll
+        for (int k = 0; k < tile_size; ++k) {
+            // Use fused multiply-add for better performance
+            sum = __fmaf_rn(tile_A[ty * tile_size + k], tile_B[k * tile_size + tx], sum);
+        }
+
+        // Wait before loading next tiles
+        __syncthreads();
+    }
+
+    // Write result to global memory
+    if (row < N && col < N) {
+        C[row * N + col] = sum;
+    }
 }

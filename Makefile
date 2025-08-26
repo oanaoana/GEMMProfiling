@@ -24,7 +24,7 @@ endif
 LIBS = -lcublas -lcusolver -lcurand
 
 # Source files
-SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/numerical_analysis.cu $(SRC_DIR)/error_tests.cu $(SRC_DIR)/generate_test_matrix.cu
+SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/error_analysis.cu $(SRC_DIR)/generate_test_matrix.cu $(SRC_DIR)/config.cu $(SRC_DIR)/matrix_utils.cu
 
 # Object files
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.o)
@@ -82,18 +82,26 @@ profile-cutlass: $(TARGET)
 profile-cublas: $(TARGET)
 	ncu --set basic ./$(TARGET) --test=cublas --size=1024
 
+# Clean up
+clean:
+	rm -f $(BUILD_DIR)/*.o $(BIN_DIR)/main test_matrices
+	rm -f *.ncu-rep
+
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all          - Build the project (default)"
-	@echo "  clean        - Remove build files"
-	@echo "  rebuild      - Clean and build"
-	@echo "  test         - Run basic test"
-	@echo "  test-all     - Run all tests"
-	@echo "  debug        - Build with debug symbols"
-	@echo "  profile-*    - Profile specific implementations"
+	@echo "  all               - Build the project (default)"
+	@echo "  error-eval-example - Build error evaluation example"
+	@echo "  clean             - Remove build files"
+	@echo "  rebuild           - Clean and build"
+	@echo "  test              - Run basic test"
+	@echo "  test-all          - Run all tests"
+	@echo "  debug             - Build with debug symbols"
+	@echo "  profile-*         - Profile specific implementations"
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  CUTLASS_PATH - Path to CUTLASS installation (default: ~/cutlass)"
+
+.PHONY: all clean rebuild test test-all debug help data error-eval-example
 
 .PHONY: all clean rebuild test test-all debug help data

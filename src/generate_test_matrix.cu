@@ -13,6 +13,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <time.h>
 
 // Helper function to check if file exists
 bool file_exists(const char* filename) {
@@ -23,7 +24,7 @@ bool file_exists(const char* filename) {
 // Generate filename for matrix based on type and size
 void generate_matrix_filename(char* filename, size_t filename_size, MatrixType type, int n) {
     const char* type_names[] = {
-        "random", "wellcond", "illcond", "identity", "hilbert", "fromfile", "custom"
+        "wellcond", "illcond", "normaldist", "scaledftz", "skewmag", "fromfile"
     };
 
     int type_index = (int)type;
@@ -199,46 +200,64 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
         return false;
     }
 
-    // Define condition numbers for different matrix types
-    float condition_number;
-    switch (type) {
-        case MATRIX_RANDOM:
-            condition_number = 10.0f;  // Moderately conditioned
-            break;
-        case MATRIX_WELL_CONDITIONED:
-            condition_number = 2.0f;   // Well conditioned
-            break;
-        case MATRIX_ILL_CONDITIONED:
-            condition_number = 1e6f;   // Ill conditioned
-            break;
-        case MATRIX_IDENTITY:
-            condition_number = 1.0f;   // Perfect condition
-            break;
-        case MATRIX_HILBERT:
-            condition_number = 1e12f;  // Very ill conditioned
-            break;
-        case MATRIX_CUSTOM:
-            condition_number = 1e3f;   // Moderately ill conditioned
-            break;
-        default:
-            printf("Unknown matrix type %d, using moderate conditioning\n", (int)type);
-            condition_number = 10.0f;
-            break;
-    }
-
-    printf("Generating matrix with condition number %.2e\n", condition_number);
-
     // Allocate device memory for matrix generation
     float* d_matrix;
     cudaMalloc(&d_matrix, n * n * sizeof(float));
 
-    // Generate matrix using SVD method
-    generate_matrix_svd(d_matrix, n, condition_number);
+    // Generate matrix based on type
+    switch (type) {
+        case MATRIX_ODO_WELL_CONDITIONED:
+            printf("Generating well-conditioned matrix using SVD (condition number: %.2e)\n", 2.0f);
+            generate_matrix_svd(d_matrix, n, 2.0f);
+            break;
+
+        case MATRIX_ODO_ILL_CONDITIONED:
+            printf("Generating ill-conditioned matrix using SVD (condition number: %.2e)\n", 1e6f);
+            generate_matrix_svd(d_matrix, n, 1e6f);
+            break;
+
+        case MATRIX_NORMAL_DISTRIBUTION:
+            printf("Generating normal distribution matrix (mean: 0.0, std: 1.0)\n");
+            generate_matrix_distribution(d_matrix, n, n, DIST_NORMAL, 0.0f, 1.0f);
+            break;
+
+        case MATRIX_SCALED_FTZ:
+            {
+                printf("Generating FTZ-scaled matrix (scale: %.2e)\n", 1e-30f);
+                // First generate normal, then scale to FTZ range
+                generate_matrix_distribution(d_matrix, n, n, DIST_NORMAL, 0.0f, 1.0f);
+
+                float ftz_scale = 1e-30f;
+                float* h_matrix = (float*)malloc(n * n * sizeof(float));
+                cudaMemcpy(h_matrix, d_matrix, n * n * sizeof(float), cudaMemcpyDeviceToHost);
+                for (int i = 0; i < n * n; i++) {
+                    h_matrix[i] *= ftz_scale;
+                }
+                cudaMemcpy(d_matrix, h_matrix, n * n * sizeof(float), cudaMemcpyHostToDevice);
+                free(h_matrix);
+                break;
+            }
+
+        case MATRIX_SKEW_MAGNITUDE:
+            printf("Generating skewed magnitude matrix using log-normal distribution\n");
+            generate_matrix_distribution(d_matrix, n, n, DIST_LOG_NORMAL, 0.0f, 2.0f);
+            break;
+
+        case MATRIX_FROM_FILE:
+            printf("ERROR: MATRIX_FROM_FILE should not reach generation code\n");
+            cudaFree(d_matrix);
+            return false;
+
+        default:
+            printf("Unknown matrix type %d, using moderate SVD conditioning\n", (int)type);
+            generate_matrix_svd(d_matrix, n, 10.0f);
+            break;
+    }
 
     // Copy result back to host
     cudaMemcpy(matrix, d_matrix, n * n * sizeof(float), cudaMemcpyDeviceToHost);
 
-    // Cleanup
+    // Cleanup device memory
     cudaFree(d_matrix);
 
     // Save generated matrix to file for future use
@@ -247,7 +266,9 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
     }
 
     return true;
-}// Utility function to print matrix statistics
+}
+
+// Utility function to print matrix statistics
 void print_matrix_stats(float* matrix, int n, const char* name) {
     double sum = 0.0, sum_sq = 0.0;
     float min_val = matrix[0], max_val = matrix[0];
@@ -270,4 +291,59 @@ void print_matrix_stats(float* matrix, int n, const char* name) {
     printf("  Mean: %.6e\n", mean);
     printf("  Std dev: %.6e\n", sqrt(variance));
     printf("  Frobenius norm: %.6e\n", frobenius_norm);
+}
+
+// CUDA kernel to scale uniform values from [0,1) to [min,max)
+__global__ void scale_uniform_kernel(float* data, int n, float min_val, float scale) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        data[idx] = min_val + data[idx] * scale;
+    }
+}
+
+// Generate matrix with specified distribution (operates on GPU memory)
+// Parameters:
+//   d_matrix: Device memory pointer (must be pre-allocated)
+//   m, n: Matrix dimensions (rows, columns)
+//   dist_type: DIST_UNIFORM, DIST_NORMAL, or DIST_LOG_NORMAL
+//   param1, param2: Distribution parameters
+//     - UNIFORM: param1=min, param2=max
+//     - NORMAL: param1=mean, param2=std_dev
+//     - LOG_NORMAL: param1=log_mean, param2=log_std_dev
+void generate_matrix_distribution(float* d_matrix, int m, int n, DistributionType dist_type,
+                                 float param1, float param2) {
+    curandGenerator_t gen;
+    curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
+    curandSetPseudoRandomGeneratorSeed(gen, time(NULL));
+
+    size_t total_elements = m * n;
+
+    switch (dist_type) {
+        case DIST_UNIFORM:
+            curandGenerateUniform(gen, d_matrix, total_elements);
+            // Scale from [0,1) to [param1, param2)
+            if (param1 != 0.0f || param2 != 1.0f) {
+                float scale = param2 - param1;
+                dim3 threads(256);
+                dim3 blocks((total_elements + threads.x - 1) / threads.x);
+                scale_uniform_kernel<<<blocks, threads>>>(d_matrix, total_elements, param1, scale);
+                cudaDeviceSynchronize();
+            }
+            break;
+
+        case DIST_NORMAL:
+            curandGenerateNormal(gen, d_matrix, total_elements, param1, param2);
+            break;
+
+        case DIST_LOG_NORMAL:
+            curandGenerateLogNormal(gen, d_matrix, total_elements, param1, param2);
+            break;
+
+        default:
+            printf("Unknown distribution type %d, using uniform [0,1)\n", (int)dist_type);
+            curandGenerateUniform(gen, d_matrix, total_elements);
+            break;
+    }
+
+    curandDestroyGenerator(gen);
 }

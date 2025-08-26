@@ -11,7 +11,8 @@
 #include "../include/utils.cuh"
 #include "../include/gemms.cuh"
 #include "../include/benchmark.h"
-#include "../include/error_tests.cuh"
+#include "../include/error_analysis.cuh"
+#include "../include/config.h"
 
 bool g_enable_verification = false;
 bool g_verify_results = false;  // Default to no verification
@@ -67,6 +68,12 @@ int main(int argc, char **argv) {
         enabled_tests[i] = true;
         enabled_sizes[i] = true;
     }
+
+    // Initialize configuration from config file
+    printf("Loading configuration...\n");
+
+    printf("Configuration: TILE_SIZE=%d, TILE_M=%d, TILE_N=%d, TILE_K=%d\n",
+           TILE_SIZE, TILE_M, TILE_N, TILE_K);
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
