@@ -7,21 +7,15 @@
 #include <cublas_v2.h>
 #include <math.h>
 
-// Declare extern flag from main.cu
-extern bool g_verify_results;
 
-// Define available tests (must match NUM_TESTS in header)
-TestCase available_tests[NUM_TESTS] = {
-    {"naive", launch_naive, true},
-    {"tiled", launch_tiled, true},
-    {"tiled_rect", launch_tiled_rect, true},
-    {"cublas", launch_cublas, true},
-    {"cublas_tensor", launch_cublas_tensor, true},
-    {"cutlass", launch_cutlass, true}
+// Define available tests using unified kernel types
+const char* available_test_names[NUM_TESTS] = {
+    "naive", "tiled", "tiled_opt", "tiled_pairwise",
+    "tiled_rect", "cublas", "cublas_tensor", "cutlass", ""
 };
 
-// Benchmark function
-void runBenchmark(const char* name, int n, KernelFunc kernel,
+// Benchmark function using unified kernel dispatch
+void runBenchmark(const char* name, int n, KernelType kernel_type,
                   float* h_A, float* h_B, float* h_C,
                   float* d_A, float* d_B, float* d_C,
                   FILE* dataFile) {
@@ -43,8 +37,8 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    // Warmup run
-    kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+    // Warmup run using unified dispatch
+    launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
     cudaDeviceSynchronize();
 
     // Clear result matrix with a known pattern
@@ -59,23 +53,23 @@ void runBenchmark(const char* name, int n, KernelFunc kernel,
     // WARM-UP RUNS
     printf("  Warming up...");
     for (int i = 0; i < 3; i++) {
-        kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+        launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
     }
     cudaDeviceSynchronize();  // Ensure all warm-up runs complete
     printf(" done\n");
 
     // MULTIPLE TIMED RUNS
-    int num_runs = (n < 1024) ? 10 : 1;
+    int num_runs = (n < 1024) ? 10 : 5;  // At least 5 runs for N=1024
     float total_time = 0.0f;
-    float run_times[num_runs];  // Declare array here
+    float run_times[10];  // Fixed array size for safety
 
     for (int run = 0; run < num_runs; run++) {
         cudaEventRecord(start);
 
         // Multiple kernel calls per timing measurement
-        int iterations_per_run = (n < 1024) ? 10 : 1;
+        int iterations_per_run = (n < 1024) ? 10 : 3;  // At least 3 iterations for N=1024
         for (int iter = 0; iter < iterations_per_run; iter++) {
-            kernel(d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+            launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
         }
 
         cudaEventRecord(stop);
@@ -180,18 +174,21 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
         // Run each enabled test
         for (int j = 0; j < NUM_TESTS; j++) {
             if (!enabled_tests[j]) continue;
+            if (strlen(available_test_names[j]) == 0) continue; // Skip empty names
 
-            printf("\n===== %s =====\n", available_tests[j].name);
-            runBenchmark(available_tests[j].name, n, available_tests[j].kernel,
+            printf("\n===== %s =====\n", available_test_names[j]);
+
+            // Do the lookup ONCE before timing-critical code
+            KernelType kernel_type = getKernelTypeFromName(available_test_names[j]);
+            if (kernel_type == static_cast<KernelType>(-1)) {
+                printf("Error: Unknown kernel type for '%s'\n", available_test_names[j]);
+                continue;
+            }
+
+            runBenchmark(available_test_names[j], n, kernel_type,
                          h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
 
-            // Clean, simple verification based on runtime flag
-            if (g_verify_results) {
-                printf("\nVerifying results for %s kernel at size %d...\n",
-                       available_tests[j].name, n);
-                cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
-                verify_result(h_A, h_B, h_C, n);
-            }
+            // Verification removed - use --error-analysis for accuracy testing
         }
 
         // Free memory (now in correct scope)
@@ -205,6 +202,62 @@ void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
 
     fclose(dataFile);
     printf("\nBenchmark complete. Results saved to data/roofline_data.csv\n");
+}
+
+// Simple function to run a single benchmark with arbitrary size
+void runSingleBenchmark(const char* test_name, int n) {
+    printf("=== Single Benchmark Test ===\n");
+    printf("Test: %s, Size: %dx%d\n", test_name, n, n);
+
+    // Find the kernel type using unified lookup
+    KernelType kernel_type = getKernelTypeFromName(test_name);
+    if (kernel_type == static_cast<KernelType>(-1)) {
+        printf("Error: Test '%s' not found\n", test_name);
+        return;
+    }
+
+    // Allocate memory
+    size_t size = n * n * sizeof(float);
+    float *h_A = (float*)malloc(size);
+    float *h_B = (float*)malloc(size);
+    float *h_C = (float*)malloc(size);
+    float *d_A, *d_B, *d_C;
+
+    cudaMalloc(&d_A, size);
+    cudaMalloc(&d_B, size);
+    cudaMalloc(&d_C, size);
+
+    // Initialize matrices
+    for (int i = 0; i < n * n; i++) {
+        h_A[i] = (float)(rand() % 100) / 100.0f;
+        h_B[i] = (float)(rand() % 100) / 100.0f;
+        h_C[i] = 0.0f;
+    }
+
+    // Copy to device
+    cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_C, h_C, size, cudaMemcpyHostToDevice);
+
+    // Open output file
+    FILE* dataFile = fopen("data/roofline_data.csv", "w");
+    if (dataFile) {
+        fprintf(dataFile, "Test,N,Time(ms),GFLOP/s,Bandwidth(GB/s),ArithmeticIntensity\n");
+    }
+
+    // Run the benchmark using unified dispatch
+    runBenchmark(test_name, n, kernel_type, h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
+
+    // Clean up
+    if (dataFile) fclose(dataFile);
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
+    free(h_A);
+    free(h_B);
+    free(h_C);
+
+    printf("\nSingle benchmark complete!\n");
 }
 
 // Note: runNumericalAnalysisBenchmarks has been moved to error_tests.cu

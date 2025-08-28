@@ -1,5 +1,8 @@
 #include "../include/utils.cuh"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #include "../include/gemms.cuh"
 #include "../include/benchmark.h"  // For BLOCK_SIZE, TILE_SIZE constants
 
@@ -46,12 +49,59 @@ void printDevicePerformanceInfo() {
     printf("\n");
 }
 
-void verify_result(float *A, float *B, float *C, int N) {
-    // Use more appropriate epsilon for float-to-double comparison
-    float eps = 1e-6;
-    float max_rel_error = 0.0f;
-    float sum_rel_error = 0.0f;
-    int error_count = 0;
+// Compute reference result in FP64 on GPU using cuBLAS
+void compute_C_reference_gpu_fp64(float *h_A, float *h_B, float *h_C_exact, int N) {
+    printf("Computing reference result in FP64 on GPU...\n");
+
+    // Allocate GPU memory for FP64 computation
+    size_t size_fp64 = N * N * sizeof(double);
+
+    double *d_A_fp64, *d_B_fp64, *d_C_fp64;
+    cudaMalloc(&d_A_fp64, size_fp64);
+    cudaMalloc(&d_B_fp64, size_fp64);
+    cudaMalloc(&d_C_fp64, size_fp64);
+
+    // Allocate host memory for FP64 data
+    double *h_A_fp64 = (double*)malloc(size_fp64);
+    double *h_B_fp64 = (double*)malloc(size_fp64);
+    double *h_C_fp64 = (double*)malloc(size_fp64);
+
+    // Convert FP32 to FP64 on CPU (fast conversion, GPU GEMM still dominates)
+    for (int i = 0; i < N * N; i++) {
+        h_A_fp64[i] = (double)h_A[i];
+        h_B_fp64[i] = (double)h_B[i];
+    }
+
+    // Copy FP64 data to GPU
+    cudaMemcpy(d_A_fp64, h_A_fp64, size_fp64, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B_fp64, h_B_fp64, size_fp64, cudaMemcpyHostToDevice);
+
+    // Create cuBLAS handle for FP64
+    cublasHandle_t handle;
+    cublasCreate(&handle);
+
+    // Perform FP64 GEMM on GPU
+    const double alpha = 1.0, beta = 0.0;
+    cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, N, N,
+                &alpha, d_B_fp64, N, d_A_fp64, N, &beta, d_C_fp64, N);
+
+    // Copy result back to host
+    cudaMemcpy(h_C_fp64, d_C_fp64, size_fp64, cudaMemcpyDeviceToHost);
+
+    // Convert back to FP32 for compatibility
+    for (int i = 0; i < N * N; i++) {
+        h_C_exact[i] = (float)h_C_fp64[i];
+    }
+
+    // Cleanup
+    cublasDestroy(handle);
+    cudaFree(d_A_fp64); cudaFree(d_B_fp64); cudaFree(d_C_fp64);
+    free(h_A_fp64); free(h_B_fp64); free(h_C_fp64);
+}
+
+// Compute reference result in FP64 on CPU
+void compute_C_reference(float *A, float *B, float *C_exact, int N) {
+    printf("Computing reference result in FP64 on CPU...\n");
 
     for (int row = 0; row < N; ++row) {
         for (int col = 0; col < N; ++col) {
@@ -60,24 +110,41 @@ void verify_result(float *A, float *B, float *C, int N) {
             for (int k = 0; k < N; ++k) {
                 sum += (double)A[row * N + k] * (double)B[k * N + col];
             }
+            // Store result as float
+            C_exact[row * N + col] = (float)sum;
+        }
+    }
+}
 
-            // Store CPU result for printing
-            float cpu_result = (float)sum;
+void verify_result(float *A, float *B, float *C, int N) {
+    // Use more appropriate epsilon for float comparison
+    float eps = 1e-6;
+    float max_rel_error = 0.0f;
+    float sum_rel_error = 0.0f;
+    int error_count = 0;
 
-            // Compare GPU float result with double precision reference
-            double abs_error = fabs((double)C[row * N + col] - sum);
-            double rel_error = abs_error / (fabs(sum) > 1e-10 ? fabs(sum) : 1e-10);
+    // Allocate memory for CPU FP64 reference
+    float *C_exact = (float*)malloc(N * N * sizeof(float));
+    compute_C_reference(A, B, C_exact, N);
 
-            // Record statistics in double precision
+    for (int row = 0; row < N; ++row) {
+        for (int col = 0; col < N; ++col) {
+            int idx = row * N + col;
+
+            // Compare GPU float result with CPU FP64 reference
+            double abs_error = fabs((double)C[idx] - (double)C_exact[idx]);
+            double rel_error = abs_error / (fabs((double)C_exact[idx]) > 1e-10 ? fabs((double)C_exact[idx]) : 1e-10);
+
+            // Record statistics
             max_rel_error = fmax(max_rel_error, (float)rel_error);
             sum_rel_error += (float)rel_error;
 
-            // Convert error threshold to match the precision of abs_error
+            // Check error threshold
             if (abs_error > (double)eps) {
                 error_count++;
                 if (error_count <= 5) { // Limit output to first 5 errors
-                    printf("Mismatch at (%d, %d): GPU = %f, CPU = %f, Rel Error = %e\n",
-                          row, col, C[row * N + col], cpu_result, rel_error);
+                    printf("Mismatch at (%d, %d): GPU = %f, CPU_FP64 = %f, Rel Error = %e\n",
+                          row, col, C[idx], C_exact[idx], rel_error);
                 }
             }
         }
@@ -90,9 +157,10 @@ void verify_result(float *A, float *B, float *C, int N) {
 
     if (error_count == 0)
         printf("Result verified: correct within epsilon %e.\n", eps);
+
+    // Clean up
+    free(C_exact);
 }
-
-
 void check_occupancy() {
     int device;
     cudaGetDevice(&device);
@@ -105,11 +173,11 @@ void check_occupancy() {
 
     // For TILE_SIZE=16 (16×16 = 256 threads per block)
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks16,
-                                                  matmul_tiled, 256, 2048);
+                                                  (void(*)(float*, float*, float*, int))matmul_tiled, 256, 2048);
 
     // For TILE_SIZE=32 (32×32 = 1024 threads per block)
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks32,
-                                                  matmul_tiled, 1024, 8192);
+                                                  (void(*)(float*, float*, float*, int))matmul_tiled, 1024, 8192);
 
     printf("=== OCCUPANCY ANALYSIS ===\n");
     printf("GPU: %s, SMs: %d\n", prop.name, prop.multiProcessorCount);
@@ -172,4 +240,104 @@ void printCacheInfo() {
     printf("Theoretical coalescing: PERFECT (1:1 ratio expected)\n");
 
     printf("=====================================\n\n");
+}
+
+// Comparison function for qsort (for percentile calculation)
+static int compare_doubles(const void *a, const void *b) {
+    double arg1 = *(const double*)a;
+    double arg2 = *(const double*)b;
+
+    if (arg1 < arg2) return -1;
+    if (arg1 > arg2) return 1;
+    return 0;
+}
+
+// Compute comprehensive statistics for an array of doubles
+void compute_array_statistics(const double* array, int size, ArrayStats* stats) {
+    if (size <= 0 || array == NULL || stats == NULL) {
+        return;
+    }
+
+    // Copy array for sorting (needed for percentile)
+    double* sorted_array = (double*)malloc(size * sizeof(double));
+    memcpy(sorted_array, array, size * sizeof(double));
+
+    // Calculate average and find min/max
+    double sum = 0.0;
+    stats->minimum = array[0];
+    stats->maximum = array[0];
+
+    for (int i = 0; i < size; i++) {
+        sum += array[i];
+        if (array[i] < stats->minimum) stats->minimum = array[i];
+        if (array[i] > stats->maximum) stats->maximum = array[i];
+    }
+    stats->average = sum / size;
+
+    // Calculate standard deviation
+    double variance_sum = 0.0;
+    for (int i = 0; i < size; i++) {
+        double diff = array[i] - stats->average;
+        variance_sum += diff * diff;
+    }
+    stats->std_dev = sqrt(variance_sum / size);
+
+    // Sort array and calculate 95th percentile
+    qsort(sorted_array, size, sizeof(double), compare_doubles);
+
+    // Calculate 95th percentile index
+    double percentile_index = 0.95 * (size - 1);
+    int lower_index = (int)floor(percentile_index);
+    int upper_index = (int)ceil(percentile_index);
+
+    if (lower_index == upper_index) {
+        stats->p95 = sorted_array[lower_index];
+    } else {
+        // Linear interpolation between the two closest values
+        double weight = percentile_index - lower_index;
+        stats->p95 = sorted_array[lower_index] * (1.0 - weight) + sorted_array[upper_index] * weight;
+    }
+
+    free(sorted_array);
+}
+
+// Unified kernel dispatch function that both benchmark and error analysis can use
+// Function to map kernel name to KernelType
+KernelType getKernelTypeFromName(const char* name) {
+    if (strcmp(name, "naive") == 0) return KERNEL_NAIVE;
+    if (strcmp(name, "tiled") == 0) return KERNEL_TILED;
+    if (strcmp(name, "tiled_opt") == 0) return KERNEL_TILED_OPT;
+    if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
+    if (strcmp(name, "tiled_rect") == 0) return KERNEL_TILED_RECT;
+    if (strcmp(name, "cublas") == 0) return KERNEL_CUBLAS;
+    if (strcmp(name, "cublas_tensor") == 0) return KERNEL_CUBLAS_TENSOR;
+    if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
+    if (strcmp(name, "cutlass_tensor") == 0) return KERNEL_CUTLASS_TENSOR;
+    return static_cast<KernelType>(-1); // Return invalid value for unknown names
+}
+
+// Optimized kernel dispatch using function pointer table
+typedef void (*KernelFunc)(float*, float*, float*, int, dim3, dim3);
+
+static KernelFunc kernel_function_table[] = {
+    launch_naive,           // KERNEL_NAIVE
+    launch_tiled,           // KERNEL_TILED
+    launch_tiled_opt,       // KERNEL_TILED_OPT
+    launch_tiled_pairwise,  // KERNEL_TILED_PAIRWISE
+    launch_tiled_rect,      // KERNEL_TILED_RECT
+    launch_cublas,          // KERNEL_CUBLAS
+    launch_cublas_tensor,   // KERNEL_CUBLAS_TENSOR
+    launch_cutlass,         // KERNEL_CUTLASS
+    launch_cutlass_tensor   // KERNEL_CUTLASS_TENSOR
+};
+
+void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Bounds check for safety
+    if (kernel_type < 0 || kernel_type >= sizeof(kernel_function_table)/sizeof(kernel_function_table[0])) {
+        printf("ERROR: Invalid kernel type %d\n", (int)kernel_type);
+        return;
+    }
+
+    // Direct function pointer call - zero overhead dispatch!
+    kernel_function_table[kernel_type](d_A, d_B, d_C, n, blocks, threads);
 }

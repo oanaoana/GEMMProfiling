@@ -1,23 +1,7 @@
 // generate_test_matrix.cuh - Header for matrix generation and file I/O
 #pragma once
 #include <stdbool.h>
-
-// Enumeration for different matrix types
-typedef enum {
-    MATRIX_ODO_WELL_CONDITIONED,
-    MATRIX_ODO_ILL_CONDITIONED,
-    MATRIX_NORMAL_DISTRIBUTION,
-    MATRIX_SCALED_FTZ,
-    MATRIX_SKEW_MAGNITUDE,
-    MATRIX_FROM_FILE
-} MatrixType;
-
-// Distribution-based matrix generation
-typedef enum {
-    DIST_UNIFORM,       // Uniform distribution [min, max)
-    DIST_NORMAL,        // Normal distribution (mean, std_dev)
-    DIST_LOG_NORMAL     // Log-normal distribution
-} DistributionType;
+#include "config.h"  // For MatrixType and DistributionType
 
 // File I/O functions
 bool file_exists(const char* filename);
@@ -27,6 +11,7 @@ bool read_matrix_from_file(const char* filename, float* matrix, int n);
 
 // Matrix generation functions
 void generate_matrix_svd(float* d_A, int n, float cond_num);
+void generate_matrix_svd_with_seed(float* d_A, int n, float cond_num, unsigned long long seed);
 void generate_matrix_distribution(float* d_matrix, int m, int n, DistributionType dist_type,
                                  float param1, float param2);
 

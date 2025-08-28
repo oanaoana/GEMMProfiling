@@ -82,16 +82,10 @@ profile-cutlass: $(TARGET)
 profile-cublas: $(TARGET)
 	ncu --set basic ./$(TARGET) --test=cublas --size=1024
 
-# Clean up
-clean:
-	rm -f $(BUILD_DIR)/*.o $(BIN_DIR)/main test_matrices
-	rm -f *.ncu-rep
-
 # Help
 help:
 	@echo "Available targets:"
 	@echo "  all               - Build the project (default)"
-	@echo "  error-eval-example - Build error evaluation example"
 	@echo "  clean             - Remove build files"
 	@echo "  rebuild           - Clean and build"
 	@echo "  test              - Run basic test"

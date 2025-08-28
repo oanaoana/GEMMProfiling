@@ -1,6 +1,7 @@
 // error_analysis.cu - Consolidated error analysis functionality
 #include "../include/error_analysis.cuh"
 #include "../include/config.h"  // For configuration constants and SIZES
+#include "../include/generate_test_matrix.cuh"  // For get_matrix and print_matrix_stats
 #include "../include/gemms.cuh"
 #include "../include/utils.cuh"
 #include "../include/matrix_utils.cuh"  // For matrix utility functions
@@ -8,6 +9,7 @@
 #include <cublas_v2.h>
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
 
 // Kernel to analyze round-off errors during tiled GEMM
 __global__ void analyze_tiled_gemm_errors(
@@ -105,17 +107,7 @@ __global__ void analyze_tiled_gemm_errors(
 void run_numerical_analysis(float* h_A, float* h_B, int n, const char* output_filename) {
     printf("\n=== Numerical Analysis of Tiled GEMM ===\n");
     printf("Matrix size: %d x %d\n", n, n);
-
-#if ENABLE_MATRIX_STANDARDIZATION
-    // Standardize matrices on host before analysis (A = A/||A||_F, B = B/||B||_F)
-    // This ensures both matrices have unit Frobenius norm for normalized error analysis
-    printf("Standardizing matrix A on host...\n");
-    standardize_matrix_host(h_A, n);
-    printf("Standardizing matrix B on host...\n");
-    standardize_matrix_host(h_B, n);
-#else
-    printf("Matrix standardization disabled - using original matrices.\n");
-#endif
+    printf("Using original matrices without standardization.\n");
 
     size_t size = n * n * sizeof(float);
     size_t tile_data_size = ((n + TILE_SIZE - 1) / TILE_SIZE) *
@@ -340,56 +332,24 @@ void generateReport(bool* enabled_sizes) {
 void runNumericalAnalysisBenchmarks(bool* enabled_sizes) {
     printf("=== Starting Numerical Analysis of Tiled GEMM ===\n");
 
-    // Define matrix types for systematic testing
-    // Each type will be tested with multiple instances for statistical averaging
-    struct MatrixTypeConfig {
-        MatrixType type;
-        const char* name;
-        const char* description;
-        bool enabled;
-        int num_instances;  // Number of different matrices to generate and test
-    };
-
-    MatrixTypeConfig matrix_types[] = {
-        {MATRIX_ODO_WELL_CONDITIONED, "wellcond", "Well-conditioned matrices", true, 100},
-        {MATRIX_ODO_ILL_CONDITIONED, "illcond", "Ill-conditioned matrices", true, 100},
-        {MATRIX_NORMAL_DISTRIBUTION, "normal", "Normal distribution matrices", true, 100},
-        {MATRIX_SCALED_FTZ, "scaled", "Scaled matrices near FTZ threshold", true, 50},
-        {MATRIX_SKEW_MAGNITUDE, "skewed", "Matrices with skewed magnitude distribution", true, 50},
-        // Add more matrix types as needed for comprehensive testing
-    };
-
-    int num_matrix_types = sizeof(matrix_types) / sizeof(matrix_types[0]);
-
-    // Run tests for each enabled size and matrix type
+    // Run tests for each enabled size
     for (int size_idx = 0; size_idx < NUM_SIZES; size_idx++) {
         if (!enabled_sizes[size_idx]) continue;
 
         int n = SIZES[size_idx];
         printf("\n=== Testing matrix size %dx%d ===\n", n, n);
 
-        // Test each matrix type
-        for (int type_idx = 0; type_idx < num_matrix_types; type_idx++) {
-            MatrixTypeConfig* config = &matrix_types[type_idx];
-            if (!config->enabled) continue;
+        // Test each matrix type using the working runMatrixTests function
+        MatrixTestConfig configs[] = {
+            {MATRIX_ODO_WELL_CONDITIONED, MATRIX_ODO_WELL_CONDITIONED, "wellcond", "Well-conditioned matrices", NULL, NULL, true},
+            {MATRIX_ODO_ILL_CONDITIONED, MATRIX_ODO_ILL_CONDITIONED, "illcond", "Ill-conditioned matrices", NULL, NULL, true},
+            {MATRIX_NORMAL_DISTRIBUTION, MATRIX_NORMAL_DISTRIBUTION, "normal", "Normal distribution matrices", NULL, NULL, true},
+            {MATRIX_SCALED_FTZ, MATRIX_SCALED_FTZ, "scaled", "Scaled matrices near FTZ threshold", NULL, NULL, true},
+            {MATRIX_SKEW_MAGNITUDE, MATRIX_SKEW_MAGNITUDE, "skewed", "Matrices with skewed magnitude distribution", NULL, NULL, true}
+        };
 
-            printf("\n--- Testing %s matrices (%s) ---\n", config->name, config->description);
-            printf("Generating and testing %d instances for statistical averaging...\n", config->num_instances);
-
-            // Test multiple instances of this matrix type for statistical robustness
-            for (int instance = 0; instance < config->num_instances; instance++) {
-                if (instance % 10 == 0 && instance > 0) {
-                    printf("Completed %d/%d instances...\n", instance, config->num_instances);
-                }
-
-                // TODO: Replace with proper matrix testing function
-                // runMatrixInstance(n, config->type, instance);
-                printf("Testing instance %d of %s matrices (size %dx%d)\n",
-                       instance + 1, config->name, n, n);
-            }
-
-            printf("Completed all %d instances of %s matrices\n", config->num_instances, config->name);
-        }
+        int num_configs = sizeof(configs) / sizeof(configs[0]);
+        runMatrixTests(n, configs, num_configs);
     }
 
     // Generate comprehensive report
@@ -398,4 +358,122 @@ void runNumericalAnalysisBenchmarks(bool* enabled_sizes) {
     printf("\nNumerical analysis complete!\n");
     printf("Individual test results: data/numerical_analysis_*.dat\n");
     printf("Summary report: data/numerical_analysis_summary.csv\n");
+}
+
+// Efficient multi-sample testing for specific matrix type and kernel
+void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
+    printf("\n=== Multi-Sample Analysis ===\n");
+    printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
+           (int)matrix_type, (int)kernel_type, n, n, num_samples);
+
+    // Allocate device memory (reused across all samples)
+    size_t size = n * n * sizeof(float);
+    float *d_A, *d_B, *d_C_kernel;
+    cudaMalloc(&d_A, size);
+    cudaMalloc(&d_B, size);
+    cudaMalloc(&d_C_kernel, size);
+
+    // Allocate host memory for matrices and results
+    float *h_A = (float*)malloc(size);
+    float *h_B = (float*)malloc(size);
+    float *h_C_kernel = (float*)malloc(size);
+    float *h_C_reference = (float*)malloc(size);
+
+    // Statistics array for Frobenius norm only
+    double *frobenius_errors = (double*)malloc(num_samples * sizeof(double));
+
+    // Declare variables that might be accessed after goto
+    FILE* fp = NULL;
+
+    // Configure kernel launch parameters
+    dim3 threadsPerBlock, numBlocks;
+    compute_kernel_dimensions_dispatch(kernel_type, n, &threadsPerBlock, &numBlocks);
+
+    printf("Running %d samples...\n", num_samples);
+
+    // Run multiple samples
+    for (int sample = 0; sample < num_samples; sample++) {
+        if (sample % 10 == 0 && sample > 0) {
+            printf("Completed %d/%d samples...\n", sample, num_samples);
+        }
+
+        // Generate new matrices for this sample using SVD with well-conditioned number
+        // Use different seeds for each sample to ensure truly random matrices
+        unsigned long long base_seed = (unsigned long long)time(NULL);
+        generate_matrix_svd_with_seed(d_A, n, WELL_COND_NUMBER, base_seed + sample * 1000);
+        generate_matrix_svd_with_seed(d_B, n, WELL_COND_NUMBER, base_seed + sample * 1000 + 1);
+
+        // Copy matrices to host for CPU FP64 reference computation
+        cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_B, d_B, size, cudaMemcpyDeviceToHost);
+
+        // Compute reference result using GPU FP64 (much faster than CPU)
+        compute_C_reference_gpu_fp64(h_A, h_B, h_C_reference, n);
+
+        // Launch the specified kernel using unified dispatch
+        launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+
+        cudaDeviceSynchronize();
+
+        // Copy GPU result back to host for error computation
+        cudaMemcpy(h_C_kernel, d_C_kernel, size, cudaMemcpyDeviceToHost);        // Compute Frobenius error for this sample
+        double frobenius_error = 0.0;
+        double ref_norm = 0.0;
+
+        for (int i = 0; i < n * n; i++) {
+            double diff = h_C_kernel[i] - h_C_reference[i];
+            frobenius_error += diff * diff;
+            ref_norm += h_C_reference[i] * h_C_reference[i];
+        }
+
+        frobenius_errors[sample] = sqrt(frobenius_error / sqrt(ref_norm)); // Normalized Frobenius error
+
+        // // Debug output for first few samples
+        // if (sample < 3) {
+        //     printf("Sample %d: frobenius_error=%.10e, ref_norm=%.10e, normalized=%.10e\n",
+        //            sample, frobenius_error, ref_norm, frobenius_errors[sample]);
+        //     printf("  First few kernel results: %.6f %.6f %.6f\n", h_C_kernel[0], h_C_kernel[1], h_C_kernel[2]);
+        //     printf("  First few reference results: %.6f %.6f %.6f\n", h_C_reference[0], h_C_reference[1], h_C_reference[2]);
+        // }
+    }
+
+    printf("Completed all %d samples\n", num_samples);
+
+    // Compute comprehensive statistics using utility function
+    ArrayStats frob_stats;
+    compute_array_statistics(frobenius_errors, num_samples, &frob_stats);
+
+    // Debug: Print all individual Frobenius norms
+    // printf("\n=== Debug: Individual Frobenius Error Values ===\n");
+    // for (int i = 0; i < num_samples; i++) {
+    //     printf("Sample %2d: %.10e\n", i, frobenius_errors[i]);
+    // }
+
+    // Print summary
+    printf("\n=== Multi-Sample Analysis Results ===\n");
+    printf("Matrix Type: %d, Kernel: %d, Size: %dx%d\n", (int)matrix_type, (int)kernel_type, n, n);
+    printf("Number of samples: %d\n", num_samples);
+    printf("\nFrobenius Error Statistics:\n");
+    printf("  Average: %.3e\n", frob_stats.average);
+    printf("  Std Dev: %.3e\n", frob_stats.std_dev);
+    printf("  Minimum: %.3e\n", frob_stats.minimum);
+    printf("  Maximum: %.3e\n", frob_stats.maximum);
+    printf("  95th %%ile: %.3e\n", frob_stats.p95);
+
+    // Save detailed results to file
+    char filename[256];
+    snprintf(filename, sizeof(filename), "data/%s_samples%d_n%d.csv", output_prefix, num_samples, n);
+    fp = fopen(filename, "w");
+    if (fp) {
+        fprintf(fp, "sample,frobenius_error\n");
+        for (int i = 0; i < num_samples; i++) {
+            fprintf(fp, "%d,%.10e\n", i, frobenius_errors[i]);
+        }
+        fclose(fp);
+        printf("\nDetailed results saved to: %s\n", filename);
+    }
+
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C_kernel);
+    free(h_A); free(h_B); free(h_C_kernel); free(h_C_reference);
+    free(frobenius_errors);
 }

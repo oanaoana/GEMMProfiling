@@ -28,7 +28,10 @@ void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 t
 }
 
 // Tiled implementation
-__global__ void matmul_tiled(float *A, float *B, float *C, int N) {
+__global__ void matmul_tiled(const float* __restrict__ A,
+                             const float* __restrict__ B,
+                             float* __restrict__ C,
+                             int N) {
     // Shared memory with bank conflict avoidance (+1 padding)
     __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
     __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
@@ -77,22 +80,100 @@ __global__ void matmul_tiled(float *A, float *B, float *C, int N) {
     }
 }
 
-// Launch wrapper for tiled implementation with config
-void launch_tiled_config(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads, TileConfig* tiles) {
-    if (tiles->tile_m == tiles->tile_n) {
-        // Square tiling - use optimized square kernel
-        int shared_size = 2 * tiles->tile_m * tiles->tile_m * sizeof(float);
-        matmul_tiled_square<<<blocks, threads, shared_size>>>(d_A, d_B, d_C, n, tiles->tile_m);
-    } else {
-        // Rectangular tiling - use existing rectangular kernel
-        matmul_tiled_rectangular<<<blocks, threads>>>(d_A, d_B, d_C, n);
-    }
-}
-
 // Launch wrapper for tiled implementation with consistent signature
 void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Use compile-time constants for fixed tiling
     matmul_tiled<<<blocks, threads>>>(d_A, d_B, d_C, n);
+}
+
+// Optimized tiled implementation with transposed B for better memory access
+__global__ void matmul_tiled_opt(const float* __restrict__ A,
+                                 const float* __restrict__ B,
+                                 float* __restrict__ C,
+                                 int N) {
+    // Shared memory with bank conflict avoidance (+1 padding)
+    __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
+
+    // Thread indices
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x, by = blockIdx.y;
+
+    // Global indices for this thread
+    int row = by * TILE_SIZE + ty;
+    int col = bx * TILE_SIZE + tx;
+
+    // Accumulator - keep in register
+    float sum = 0.0f;
+    int num_tiles = (N + TILE_SIZE - 1) / TILE_SIZE;
+
+    // Main tiling loop
+    for (int t = 0; t < num_tiles; ++t) {
+        // Vectorized load for tile A - only threads with tx % 4 == 0 do the wide load
+        int A_row = row;
+        int A_col = t * TILE_SIZE + tx;
+
+        if ((tx & 3) == 0) {
+            float4 vec = {0,0,0,0};
+            if (A_row < N && A_col + 3 < N) {
+                // 16B-aligned if A_col % 4 == 0 and base from cudaMalloc
+                vec = *reinterpret_cast<const float4*>(&A[A_row * N + A_col]);
+            } else {
+                // edge-safe scalar gather (rare path)
+                vec.x = (A_row < N && A_col + 0 < N) ? A[A_row*N + A_col + 0] : 0.f;
+                vec.y = (A_row < N && A_col + 1 < N) ? A[A_row*N + A_col + 1] : 0.f;
+                vec.z = (A_row < N && A_col + 2 < N) ? A[A_row*N + A_col + 2] : 0.f;
+                vec.w = (A_row < N && A_col + 3 < N) ? A[A_row*N + A_col + 3] : 0.f;
+            }
+            // write into shared as scalars (avoid 16B alignment issues with +1 padding)
+            tile_A[ty][tx + 0] = vec.x;
+            tile_A[ty][tx + 1] = vec.y;
+            tile_A[ty][tx + 2] = vec.z;
+            tile_A[ty][tx + 3] = vec.w;
+        }
+
+        // Do the same for B (note B_col varies with tx, so same guard works)
+        int B_row = t * TILE_SIZE + ty;
+        int B_col = col;
+        if ((tx & 3) == 0) {
+            float4 vec = {0,0,0,0};
+            if (B_row < N && B_col + 3 < N) {
+                vec = *reinterpret_cast<const float4*>(&B[B_row * N + B_col]);
+            } else {
+                vec.x = (B_row < N && B_col + 0 < N) ? B[B_row*N + B_col + 0] : 0.f;
+                vec.y = (B_row < N && B_col + 1 < N) ? B[B_row*N + B_col + 1] : 0.f;
+                vec.z = (B_row < N && B_col + 2 < N) ? B[B_row*N + B_col + 2] : 0.f;
+                vec.w = (B_row < N && B_col + 3 < N) ? B[B_row*N + B_col + 3] : 0.f;
+            }
+            tile_B[ty][tx + 0] = vec.x;
+            tile_B[ty][tx + 1] = vec.y;
+            tile_B[ty][tx + 2] = vec.z;
+            tile_B[ty][tx + 3] = vec.w;
+        }
+
+        // Wait for all threads to finish loading
+        __syncthreads();
+
+        // Compute partial dot product with optimizations
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            // Use fused multiply-add for better performance
+            sum = __fmaf_rn(tile_A[ty][k], tile_B[k][tx], sum);
+        }
+
+        // Wait before loading next tiles
+        __syncthreads();
+    }
+
+    // Write result to global memory
+    if (row < N && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+
+// Launch wrapper for optimized tiled implementation
+void launch_tiled_opt(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    matmul_tiled_opt<<<blocks, threads>>>(d_A, d_B, d_C, n);
 }
 
 // CORRECTED rectangular tiled implementation
@@ -159,6 +240,11 @@ __global__ void matmul_tiled_rectangular(float *A, float *B, float *C, int N) {
     }
 }
 
+void launch_tiled_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Use compile-time constants for fixed tiling
+    matmul_tiled_pairwise<<<blocks, threads>>>(d_A, d_B, d_C, n);
+}
+
 // Launch wrapper for rectangular tiled implementation
 void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Use TILE_M, TILE_N for block dimensions
@@ -168,6 +254,78 @@ void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, d
     matmul_tiled_rectangular<<<rect_blocks, rect_threads>>>(d_A, d_B, d_C, n);
 }
 
+__global__ void matmul_tiled_pairwise(const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C, int N) {
+    // Shared memory with bank-conflict padding
+    __shared__ float tile_A[TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_B[TILE_SIZE][TILE_SIZE + 1];
+
+    // Thread / block indices
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x,  by = blockIdx.y;
+
+    // Global output indices for this thread
+    int row = by * TILE_SIZE + ty;
+    int col = bx * TILE_SIZE + tx;
+
+    // Number of K-tiles
+    int num_tiles = (N + TILE_SIZE - 1) / TILE_SIZE;
+
+    // --- ONLINE PAIRWISE STACK (per thread) ---
+    // Each level holds one partial sum for this (row,col).
+    float level_acc[MAX_LEVELS];
+    #pragma unroll
+    for (int l = 0; l < MAX_LEVELS; ++l) level_acc[l] = 0.0f;
+    unsigned int occ_mask = 0u; // bit l set ⇒ level l occupied
+
+    // Main tiling loop over K in chunks of TILE_SIZE
+    for (int t = 0; t < num_tiles; ++t) {
+        // Load tile of A (row-major)
+        int A_row = row;
+        int A_col0 = t * TILE_SIZE + tx;
+        tile_A[ty][tx] = (A_row < N && A_col0 < N) ? A[A_row * N + A_col0] : 0.0f;
+
+        // Load tile of B (row-major)
+        int B_row0 = t * TILE_SIZE + ty;
+        int B_col  = col;
+        tile_B[ty][tx] = (B_row0 < N && B_col < N) ? B[B_row0 * N + B_col] : 0.0f;
+
+        __syncthreads();
+
+        // --- compute partial for this K-tile (depth = TILE_SIZE) ---
+        float p = 0.0f;
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            p = __fmaf_rn(tile_A[ty][k], tile_B[k][tx], p);
+        }
+
+        __syncthreads(); // safe to reuse shared tiles next iteration
+
+        // --- ONLINE PAIRWISE INSERT of partial p ---
+        int l = 0;
+        // Carry-add up the occupied levels like binary addition
+        while ((occ_mask & (1u << l)) != 0u) {
+            p += level_acc[l];
+            occ_mask &= ~(1u << l);
+            ++l;
+            // Guard against overflow of MAX_LEVELS in extreme num_tiles
+            if (l >= MAX_LEVELS - 1) break;
+        }
+        level_acc[l] = p;
+        occ_mask |= (1u << l);
+    }
+
+    // Final fold: sum the remaining occupied levels
+    float result = 0.0f;
+    #pragma unroll
+    for (int l = 0; l < MAX_LEVELS; ++l) {
+        if (occ_mask & (1u << l)) result += level_acc[l];
+    }
+
+    // Write result
+    if (row < N && col < N) {
+        C[row * N + col] = result;
+    }
+}
 // cuBLAS implementation
 void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Create cuBLAS handle

@@ -3,8 +3,6 @@
 #include <stdbool.h>
 #include <string.h>  // for strcmp
 #include <cuda_runtime.h>  // for dim3
-#include "error_analysis.cuh"  // For MatrixType
-#include "generate_test_matrix.cuh"  // For DistributionType
 
 // ============================================================================
 // COMPILE-TIME CONFIGURATION CONSTANTS
@@ -12,15 +10,15 @@
 // These can be overridden by defining them before including this header
 
 #ifndef TILE_SIZE
-#define TILE_SIZE 16
+#define TILE_SIZE 32
 #endif
 
 #ifndef TILE_M
-#define TILE_M 16
+#define TILE_M 32
 #endif
 
 #ifndef TILE_N
-#define TILE_N 16
+#define TILE_N 32
 #endif
 
 #ifndef TILE_K
@@ -28,15 +26,15 @@
 #endif
 
 #ifndef BLOCK_SIZE
-#define BLOCK_SIZE 16
+#define BLOCK_SIZE 32
 #endif
 
 #ifndef BLOCK_M
-#define BLOCK_M 16
+#define BLOCK_M 32
 #endif
 
 #ifndef BLOCK_N
-#define BLOCK_N 16
+#define BLOCK_N 32
 #endif
 
 // Matrix sizes for benchmarking and testing
@@ -44,6 +42,19 @@
 #define DEFAULT_SIZES {256, 512, 1024, 2048, 4096}
 #endif
 
+// Multi-sample analysis configuration
+#ifndef DEFAULT_NUM_SAMPLES
+#define DEFAULT_NUM_SAMPLES 50
+#endif
+
+// SVD matrix generation parameters
+#ifndef WELL_COND_NUMBER
+#define WELL_COND_NUMBER 1
+#endif
+
+#ifndef MAX_LEVELS
+#define MAX_LEVELS 10
+#endif
 // ============================================================================
 // TYPE DEFINITIONS AND STRUCTS
 // ============================================================================
@@ -52,6 +63,8 @@
 typedef enum {
     KERNEL_NAIVE,
     KERNEL_TILED,
+    KERNEL_TILED_OPT,
+    KERNEL_TILED_PAIRWISE,
     KERNEL_TILED_RECT,
     KERNEL_CUBLAS,
     KERNEL_CUBLAS_TENSOR,
@@ -70,6 +83,23 @@ typedef enum {
     METRIC_BACKWARD_ERROR,
     METRIC_COUNT  // For iteration
 } MetricType;
+
+// Matrix type enumeration for different matrix generation strategies
+typedef enum {
+    MATRIX_ODO_WELL_CONDITIONED,
+    MATRIX_ODO_ILL_CONDITIONED,
+    MATRIX_NORMAL_DISTRIBUTION,
+    MATRIX_SCALED_FTZ,
+    MATRIX_SKEW_MAGNITUDE,
+    MATRIX_FROM_FILE
+} MatrixType;
+
+// Distribution type enumeration for matrix generation
+typedef enum {
+    DIST_UNIFORM,       // Uniform distribution [min, max)
+    DIST_NORMAL,        // Normal distribution (mean, std_dev)
+    DIST_LOG_NORMAL     // Log-normal distribution
+} DistributionType;
 
 // Matrix type configuration
 typedef struct {

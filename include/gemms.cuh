@@ -5,13 +5,17 @@
 
 // CUDA kernel function declarations
 __global__ void matmul_naive(float *A, float *B, float *C, int N);
-__global__ void matmul_tiled(float *A, float *B, float *C, int N);
+__global__ void matmul_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C, int N);
+__global__ void matmul_tiled_opt(const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C, int N);
+__global__ void matmul_tiled_pairwise(const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C, int N);
 __global__ void matmul_tiled_rectangular(float *A, float *B, float *C, int N);
 __global__ void matmul_tiled_square(float *A, float *B, float *C, int N, int tile_size);
 
 // Kernel launch wrappers - all with consistent signature for benchmark
 void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+void launch_tiled_opt(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+void launch_tiled_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled_rectangular(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 

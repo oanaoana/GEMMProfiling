@@ -107,7 +107,58 @@ The framework automatically tests multiple matrix configurations:
 - **Ill-conditioned**: Hilbert-like matrices, very high condition numbers
 - **Custom**: Support for loading problem-specific matrices
 
-## Tools and Visualization
+## Unified Kernel Launch Architecture
+
+The project uses a **unified kernel dispatch system** that provides both maintainability and optimal performance:
+
+### Architecture Overview
+
+```cpp
+// Centralized kernel dispatch with function pointer optimization
+KernelType kernel_type = getKernelTypeFromName("tiled_pairwise");  // Once per test
+launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, blocks, threads);  // Zero overhead
+```
+
+### Implementation Details
+
+**String-to-Enum Lookup** (happens once per test):
+```cpp
+KernelType getKernelTypeFromName(const char* name) {
+    if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
+    // ... other mappings
+}
+```
+
+**Optimized Dispatch** (zero overhead during timing):
+```cpp
+static KernelFunc kernel_function_table[] = {
+    launch_naive, launch_tiled, launch_tiled_opt, // ...
+};
+
+void launch_kernel_by_type(KernelType kernel_type, ...) {
+    kernel_function_table[kernel_type](...);  // Direct function pointer call
+}
+```
+
+### Performance Characteristics
+
+| Aspect | Previous Approaches | Unified Dispatch |
+|--------|-------------------|------------------|
+| **Lookup Overhead** | String comparison every call | String lookup once per test |
+| **Dispatch Overhead** | Function pointer OR switch | Direct function pointer (array access) |
+| **Maintainability** | Dual systems to maintain | Single centralized dispatch |
+| **Type Safety** | Runtime validation | Compile-time enum validation |
+| **Extensibility** | Update multiple locations | Add enum + function to table |
+
+### Benefits
+
+- ✅ **Zero Runtime Overhead**: Direct function pointer calls during performance-critical timing loops
+- ✅ **Single Source of Truth**: All kernel dispatch logic in one location (`src/utils.cu`)
+- ✅ **Type Safe**: Compile-time validation with enum-based kernel types
+- ✅ **Easy Extension**: Add new kernels by extending enum and function table
+- ✅ **Consistent**: Both benchmark and error analysis use identical dispatch mechanism
+
+This architecture gives you the performance of the original function pointer approach with the maintainability benefits of centralized dispatch.## Tools and Visualization
 
 This repository includes several analysis tools:
 

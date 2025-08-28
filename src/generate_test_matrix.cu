@@ -100,8 +100,8 @@ bool read_matrix_from_file(const char* filename, float* matrix, int n) {
     return true;
 }
 
-// SVD-based matrix generation with controlled condition number
-void generate_matrix_svd(float* d_A, int n, float cond_num) {
+// SVD-based matrix generation with controlled condition number and custom seed
+void generate_matrix_svd_with_seed(float* d_A, int n, float cond_num, unsigned long long seed) {
     // Create cuBLAS and cuSOLVER handles
     cublasHandle_t cublasH;
     cusolverDnHandle_t cusolverH;
@@ -119,7 +119,7 @@ void generate_matrix_svd(float* d_A, int n, float cond_num) {
     // Step 1: Generate two random matrices
     curandGenerator_t gen;
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
-    curandSetPseudoRandomGeneratorSeed(gen, 1234ULL);
+    curandSetPseudoRandomGeneratorSeed(gen, seed);
     curandGenerateUniform(gen, d_temp1, n * n);
     curandGenerateUniform(gen, d_temp2, n * n);
 
@@ -167,6 +167,13 @@ void generate_matrix_svd(float* d_A, int n, float cond_num) {
     cudaFree(d_Q1); cudaFree(d_Q2); cudaFree(d_temp1); cudaFree(d_temp2);
     cudaFree(d_sigma); cudaFree(d_tmp); cudaFree(d_tau); cudaFree(d_Rwork); cudaFree(d_info);
     cublasDestroy(cublasH); cusolverDnDestroy(cusolverH); curandDestroyGenerator(gen);
+}
+
+// SVD-based matrix generation with controlled condition number
+void generate_matrix_svd(float* d_A, int n, float cond_num) {
+    // Use current time as seed for better randomization
+    unsigned long long seed = (unsigned long long)time(NULL) + (unsigned long long)clock();
+    generate_matrix_svd_with_seed(d_A, n, cond_num, seed);
 }
 
 // Main function to get matrix (from cache or generate new)

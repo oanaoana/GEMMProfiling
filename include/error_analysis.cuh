@@ -1,7 +1,8 @@
 // error_analysis.cuh - Header for consolidated error analysis functionality
 #pragma once
 #include <cuda_runtime.h>
-#include "generate_test_matrix.cuh"  // For MatrixType
+#include "config.h"  // For fundamental types like MatrixType
+#include "generate_test_matrix.cuh"  // For generate_matrix_svd function
 
 
 // Analysis configuration
@@ -56,3 +57,6 @@ void runNumericalAnalysisBenchmarks(bool* enabled_sizes);
 void setupMatrix(float* matrix, int n, MatrixType type, const char* filename);
 void runMatrixTests(int n, MatrixTestConfig* configs, int num_configs);
 void generateReport(bool* enabled_sizes);
+
+// Efficient multi-sample testing for specific matrix type and kernel
+void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix);
