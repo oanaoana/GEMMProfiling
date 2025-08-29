@@ -10,7 +10,7 @@ SRC_DIR = src
 CUTLASS_PATH ?= $(HOME)/cutlass
 
 # Compiler flags
-NVCC_FLAGS = -O3 -std=c++17 -I$(INCLUDE_DIR)
+NVCC_FLAGS = -O3 -std=c++17 -I$(INCLUDE_DIR) #--fmad=false
 
 # Add CUTLASS include if directory exists
 ifneq ($(wildcard $(CUTLASS_PATH)/include),)

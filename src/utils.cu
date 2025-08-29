@@ -51,7 +51,7 @@ void printDevicePerformanceInfo() {
 
 // Compute reference result in FP64 on GPU using cuBLAS
 void compute_C_reference_gpu_fp64(float *h_A, float *h_B, float *h_C_exact, int N) {
-    printf("Computing reference result in FP64 on GPU...\n");
+    //printf("Computing reference result in FP64 on GPU...\n");
 
     // Allocate GPU memory for FP64 computation
     size_t size_fp64 = N * N * sizeof(double);
@@ -101,7 +101,7 @@ void compute_C_reference_gpu_fp64(float *h_A, float *h_B, float *h_C_exact, int 
 
 // Compute reference result in FP64 on CPU
 void compute_C_reference(float *A, float *B, float *C_exact, int N) {
-    printf("Computing reference result in FP64 on CPU...\n");
+    //printf("Computing reference result in FP64 on CPU...\n");
 
     for (int row = 0; row < N; ++row) {
         for (int col = 0; col < N; ++col) {
@@ -314,6 +314,51 @@ KernelType getKernelTypeFromName(const char* name) {
     if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
     if (strcmp(name, "cutlass_tensor") == 0) return KERNEL_CUTLASS_TENSOR;
     return static_cast<KernelType>(-1); // Return invalid value for unknown names
+}
+
+// Function to map matrix type name to MatrixType
+MatrixType getMatrixTypeFromName(const char* name) {
+    if (strcmp(name, "wellcond") == 0) return MATRIX_ODO_WELL_CONDITIONED;
+    if (strcmp(name, "illcond") == 0) return MATRIX_ODO_ILL_CONDITIONED;
+    if (strcmp(name, "zeromean") == 0) return MATRIX_ZEROMEAN;
+    if (strcmp(name, "normal") == 0) return MATRIX_ZEROMEAN;  // Keep backward compatibility
+    if (strcmp(name, "uniform") == 0) return MATRIX_UNIFORM;
+    if (strcmp(name, "2powers") == 0) return MATRIX_SCALED_2POWERS;
+    if (strcmp(name, "scaled") == 0) return MATRIX_SCALED_2POWERS;  // Keep backward compatibility
+    if (strcmp(name, "rademacher") == 0) return MATRIX_RADEMACHER;
+    if (strcmp(name, "skewed") == 0) return MATRIX_SKEW_MAGNITUDE;
+    if (strcmp(name, "file") == 0) return MATRIX_FROM_FILE;
+    return static_cast<MatrixType>(-1); // Return invalid value for unknown names
+}
+
+// Reverse conversion functions: enum to string
+const char* kernelTypeToString(KernelType kernel_type) {
+    switch(kernel_type) {
+        case KERNEL_NAIVE: return "naive";
+        case KERNEL_TILED: return "tiled";
+        case KERNEL_TILED_OPT: return "tiled_opt";
+        case KERNEL_TILED_PAIRWISE: return "tiled_pairwise";
+        case KERNEL_TILED_RECT: return "tiled_rect";
+        case KERNEL_CUBLAS: return "cublas";
+        case KERNEL_CUBLAS_TENSOR: return "cublas_tensor";
+        case KERNEL_CUTLASS: return "cutlass";
+        case KERNEL_CUTLASS_TENSOR: return "cutlass_tensor";
+        default: return "unknown";
+    }
+}
+
+const char* matrixTypeToString(MatrixType matrix_type) {
+    switch(matrix_type) {
+        case MATRIX_ODO_WELL_CONDITIONED: return "wellcond";
+        case MATRIX_ODO_ILL_CONDITIONED: return "illcond";
+        case MATRIX_ZEROMEAN: return "zeromean";
+        case MATRIX_UNIFORM: return "uniform";
+        case MATRIX_SCALED_2POWERS: return "2powers";
+        case MATRIX_RADEMACHER: return "rademacher";
+        case MATRIX_SKEW_MAGNITUDE: return "skewed";
+        case MATRIX_FROM_FILE: return "file";
+        default: return "unknown";
+    }
 }
 
 // Optimized kernel dispatch using function pointer table

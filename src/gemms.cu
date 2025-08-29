@@ -270,6 +270,10 @@ __global__ void matmul_tiled_pairwise(const float* __restrict__ A, const float* 
     // Number of K-tiles
     int num_tiles = (N + TILE_SIZE - 1) / TILE_SIZE;
 
+    // Compute exact number of levels needed for pairwise summation
+    // This is ceil(log2(num_tiles)) using efficient bit manipulation
+    //int needed_levels = (num_tiles <= 1) ? 1 : (32 - __clz(num_tiles - 1));
+
     // --- ONLINE PAIRWISE STACK (per thread) ---
     // Each level holds one partial sum for this (row,col).
     float level_acc[MAX_LEVELS];
@@ -331,6 +335,10 @@ void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 
     // Create cuBLAS handle
     cublasHandle_t handle;
     cublasCreate(&handle);
+
+    // Set math mode - use pedantic for true FP32 (disable TF32)
+    // Comment/uncomment the next line to toggle between pedantic FP32 and TF32 modes
+    cublasSetMathMode(handle, CUBLAS_PEDANTIC_MATH);  // Forces true FP32, no TF32
 
     // Setup alpha and beta for sgemm
     const float alpha = 1.0f;

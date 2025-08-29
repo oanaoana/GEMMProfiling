@@ -360,12 +360,73 @@ void runNumericalAnalysisBenchmarks(bool* enabled_sizes) {
     printf("Summary report: data/numerical_analysis_summary.csv\n");
 }
 
+
+inline double gamma(int n, double u) {
+    const double nu = n * u;
+    return nu / (1.0 - nu);
+}
+
+inline int ceil_log2_int(int x) {
+    int p = 0, v = x - 1;
+    while (v > 0) { v >>= 1; ++p; }
+    return p;
+}
+
+// Compute theoretical error bound factor based on kernel type and matrix size
+float compute_beta_factor(KernelType kernel_type, bool single_pass, int n) {
+    const double u = unit_roundoff_fp32(); // Use precision from config
+
+    if (single_pass) {
+        // For naive kernels: single-pass accumulation over n elements
+        return (float)gamma(n, u);
+    }
+
+    // For tiled kernels: two-stage accumulation
+    int num_tiles = (n + TILE_SIZE - 1) / TILE_SIZE;
+    int tile_inner_k = TILE_SIZE; // Inner loop accumulation size
+
+    // Stage 1: Accumulation within each tile (size TILE_SIZE)
+    double beta_inner = gamma(tile_inner_k, u);
+
+    // Stage 2: Accumulation across tiles
+    bool pairwise = (kernel_type == KERNEL_TILED_PAIRWISE);
+    double beta_outer;
+
+    if (pairwise) {
+        // Pairwise summation has logarithmic error growth
+        beta_outer = gamma(ceil_log2_int(num_tiles), u);
+    } else {
+        // Standard summation has linear error growth
+        beta_outer = gamma(num_tiles, u);
+    }
+
+    // Total error bound: inner + outer (conservative, cross-terms are O(u^2))
+    return (float)(beta_inner + beta_outer);
+}
+
+// // Choose the right u: usually FP32 accumulation
+// inline double beta_for_inner_k(int k, bool single_pass=true,
+//                                int tile_b=0, int num_tiles=0, bool pairwise=false) {
+//     const double u = unit_roundoff_fp32(); // change if accumulating in FP64, etc.
+//     if (single_pass) return gamma(k, u);
+//     // two-stage: micro-accumulate b, then reduce across t tiles
+//     int b = tile_b, t = num_tiles;
+//     if (b <= 0 || t <= 0) return gamma(k, u); // fallback
+//     double beta_b = gamma(b, u);
+//     double beta_t = pairwise ? gamma(ceil_log2_int(t), u) : gamma(t, u);
+//     return beta_b + beta_t; // conservative; cross-terms are O(u^2)
+// }
+
 // Efficient multi-sample testing for specific matrix type and kernel
 void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
     printf("\n=== Multi-Sample Analysis ===\n");
     printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
            (int)matrix_type, (int)kernel_type, n, n, num_samples);
 
+    // Compute theoretical error bound factor
+    // Use single_pass=false for tiled kernels, single_pass=true for naive kernel comparison
+    bool single_pass = (kernel_type == KERNEL_NAIVE);
+    float beta_factor = compute_beta_factor(kernel_type, single_pass, n);
     // Allocate device memory (reused across all samples)
     size_t size = n * n * sizeof(float);
     float *d_A, *d_B, *d_C_kernel;
@@ -378,9 +439,12 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     float *h_B = (float*)malloc(size);
     float *h_C_kernel = (float*)malloc(size);
     float *h_C_reference = (float*)malloc(size);
+    float *h_M_abs = (float*)malloc(size);
 
     // Statistics array for Frobenius norm only
     double *frobenius_errors = (double*)malloc(num_samples * sizeof(double));
+    double *frobenius_M_error = (double*)malloc(num_samples * sizeof(double));
+    double *normalized_errors = (double*)malloc(num_samples * sizeof(double));
 
     // Declare variables that might be accessed after goto
     FILE* fp = NULL;
@@ -397,11 +461,11 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
             printf("Completed %d/%d samples...\n", sample, num_samples);
         }
 
-        // Generate new matrices for this sample using SVD with well-conditioned number
+        // Generate new matrices for this sample using the specified matrix type
         // Use different seeds for each sample to ensure truly random matrices
         unsigned long long base_seed = (unsigned long long)time(NULL);
-        generate_matrix_svd_with_seed(d_A, n, WELL_COND_NUMBER, base_seed + sample * 1000);
-        generate_matrix_svd_with_seed(d_B, n, WELL_COND_NUMBER, base_seed + sample * 1000 + 1);
+        generate_matrix_device_with_seed(d_A, n, matrix_type, base_seed + sample * 1000);
+        generate_matrix_device_with_seed(d_B, n, matrix_type, base_seed + sample * 1000 + 1);
 
         // Copy matrices to host for CPU FP64 reference computation
         cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost);
@@ -418,23 +482,35 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         // Copy GPU result back to host for error computation
         cudaMemcpy(h_C_kernel, d_C_kernel, size, cudaMemcpyDeviceToHost);        // Compute Frobenius error for this sample
         double frobenius_error = 0.0;
-        double ref_norm = 0.0;
+        double frobenius_M = 0.0;
 
+        // Copy matrices to host for CPU FP64 reference computation
+        cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_B, d_B, size, cudaMemcpyDeviceToHost);
+
+        // Take absolute values on host arrays
         for (int i = 0; i < n * n; i++) {
-            double diff = h_C_kernel[i] - h_C_reference[i];
-            frobenius_error += diff * diff;
-            ref_norm += h_C_reference[i] * h_C_reference[i];
+            h_A[i] = fabsf(h_A[i]);
+            h_B[i] = fabsf(h_B[i]);
         }
 
-        frobenius_errors[sample] = sqrt(frobenius_error / sqrt(ref_norm)); // Normalized Frobenius error
+        // Compute reference result using GPU FP64 (much faster than CPU)
+        compute_C_reference_gpu_fp64(h_A, h_B, h_M_abs, n);
 
-        // // Debug output for first few samples
-        // if (sample < 3) {
-        //     printf("Sample %d: frobenius_error=%.10e, ref_norm=%.10e, normalized=%.10e\n",
-        //            sample, frobenius_error, ref_norm, frobenius_errors[sample]);
-        //     printf("  First few kernel results: %.6f %.6f %.6f\n", h_C_kernel[0], h_C_kernel[1], h_C_kernel[2]);
-        //     printf("  First few reference results: %.6f %.6f %.6f\n", h_C_reference[0], h_C_reference[1], h_C_reference[2]);
-        // }
+
+        for (int i = 0; i < n * n; i++) {
+            double diff_C = fabsf(h_C_kernel[i] - h_C_reference[i]);
+            frobenius_error += diff_C * diff_C;
+            double M_val = h_M_abs[i];
+            frobenius_M += M_val * M_val;
+        }
+
+        frobenius_errors[sample] = sqrt(frobenius_error);
+        frobenius_M_error[sample] = sqrt(frobenius_M);
+        // Compute beta normalized error: empirical_error / (beta * ||M||_F)
+        double theoretical_bound = frobenius_M_error[sample];
+        normalized_errors[sample] = frobenius_errors[sample] / theoretical_bound;
+
     }
 
     printf("Completed all %d samples\n", num_samples);
@@ -443,23 +519,24 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     ArrayStats frob_stats;
     compute_array_statistics(frobenius_errors, num_samples, &frob_stats);
 
-    // Debug: Print all individual Frobenius norms
-    // printf("\n=== Debug: Individual Frobenius Error Values ===\n");
-    // for (int i = 0; i < num_samples; i++) {
-    //     printf("Sample %2d: %.10e\n", i, frobenius_errors[i]);
-    // }
+    ArrayStats beta_stats;
+    compute_array_statistics(normalized_errors, num_samples, &beta_stats);
 
     // Print summary
     printf("\n=== Multi-Sample Analysis Results ===\n");
-    printf("Matrix Type: %d, Kernel: %d, Size: %dx%d\n", (int)matrix_type, (int)kernel_type, n, n);
+    printf("Matrix Type: %s, Kernel: %s, Size: %dx%d\n", matrixTypeToString(matrix_type), kernelTypeToString(kernel_type), n, n);
     printf("Number of samples: %d\n", num_samples);
     printf("\nFrobenius Error Statistics:\n");
     printf("  Average: %.3e\n", frob_stats.average);
     printf("  Std Dev: %.3e\n", frob_stats.std_dev);
-    printf("  Minimum: %.3e\n", frob_stats.minimum);
-    printf("  Maximum: %.3e\n", frob_stats.maximum);
     printf("  95th %%ile: %.3e\n", frob_stats.p95);
-
+    printf("  Max: %.3e\n", frob_stats.maximum);
+    printf("\nNormalized Error |C-C_ref|/(|A||B|) Statistics:\n");
+    printf("  Average: %.3e\n", beta_stats.average);
+    printf("  Std Dev: %.3e\n", beta_stats.std_dev);
+    printf("  95th %%ile: %.3e\n", beta_stats.p95);
+    printf("  Max: %.3e\n", beta_stats.maximum);
+    printf("Theoretical error bound factor (beta): %.6e\n", beta_factor);
     // Save detailed results to file
     char filename[256];
     snprintf(filename, sizeof(filename), "data/%s_samples%d_n%d.csv", output_prefix, num_samples, n);

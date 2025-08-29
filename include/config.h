@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <string.h>  // for strcmp
 #include <cuda_runtime.h>  // for dim3
+#include <cuda_fp16.h>  // for half precision types
+#include <cuda_bf16.h>  // for bfloat16 types
+#include <type_traits>  // for template metaprogramming
 
 // ============================================================================
 // COMPILE-TIME CONFIGURATION CONSTANTS
@@ -49,12 +52,54 @@
 
 // SVD matrix generation parameters
 #ifndef WELL_COND_NUMBER
-#define WELL_COND_NUMBER 1
+#define WELL_COND_NUMBER 1.0f
+#endif
+
+#ifndef ILL_COND_NUMBER
+#define ILL_COND_NUMBER 1e6f
 #endif
 
 #ifndef MAX_LEVELS
 #define MAX_LEVELS 10
 #endif
+
+// ============================================================================
+// PRECISION AND UNIT ROUNDOFF CONSTANTS
+// ============================================================================
+// Unit roundoff values for different floating-point precisions
+// These are used for error analysis and theoretical error bound computations
+
+// IEEE 754 single precision (FP32): 24-bit mantissa
+inline double unit_roundoff_fp32() { return ldexp(1.0, -24); }
+
+// IEEE 754 double precision (FP64): 53-bit mantissa
+inline double unit_roundoff_fp64() { return ldexp(1.0, -53); }
+
+// NVIDIA TensorFloat-32 (TF32): 11-bit mantissa (10 explicit + 1 implicit)
+inline double unit_roundoff_tf32() { return ldexp(1.0, -10); }
+
+// Brain Float 16 (BF16): 8-bit mantissa (7 explicit + 1 implicit)
+inline double unit_roundoff_bf16() { return ldexp(1.0, -8); }
+
+// IEEE 754 half precision (FP16): 11-bit mantissa (10 explicit + 1 implicit)
+inline double unit_roundoff_fp16() { return ldexp(1.0, -10); }
+
+// Template-based unit roundoff selection for future templated kernels
+template<typename T>
+inline double get_unit_roundoff() {
+    if constexpr (std::is_same_v<T, float>) {
+        return unit_roundoff_fp32();
+    } else if constexpr (std::is_same_v<T, double>) {
+        return unit_roundoff_fp64();
+    } else if constexpr (std::is_same_v<T, half>) {
+        return unit_roundoff_fp16();
+    } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+        return unit_roundoff_bf16();
+    } else {
+        return unit_roundoff_fp32(); // Default fallback
+    }
+}
+
 // ============================================================================
 // TYPE DEFINITIONS AND STRUCTS
 // ============================================================================
@@ -88,8 +133,10 @@ typedef enum {
 typedef enum {
     MATRIX_ODO_WELL_CONDITIONED,
     MATRIX_ODO_ILL_CONDITIONED,
-    MATRIX_NORMAL_DISTRIBUTION,
-    MATRIX_SCALED_FTZ,
+    MATRIX_ZEROMEAN,
+    MATRIX_UNIFORM,
+    MATRIX_SCALED_2POWERS,
+    MATRIX_RADEMACHER,
     MATRIX_SKEW_MAGNITUDE,
     MATRIX_FROM_FILE
 } MatrixType;

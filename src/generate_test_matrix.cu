@@ -169,6 +169,195 @@ void generate_matrix_svd_with_seed(float* d_A, int n, float cond_num, unsigned l
     cublasDestroy(cublasH); cusolverDnDestroy(cusolverH); curandDestroyGenerator(gen);
 }
 
+// CUDA kernel for scaling matrix elements
+__global__ void scale_matrix_kernel(float* data, int size, float scale) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        data[idx] *= scale;
+    }
+}
+
+// CUDA kernel to convert uniform [0,1) values to Rademacher {-1, +1}
+__global__ void rademacher_transform_kernel(float* data, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        // Convert uniform [0,1) to Rademacher: -1 if < 0.5, +1 if >= 0.5
+        data[idx] = (data[idx] < 0.5f) ? -1.0f : 1.0f;
+    }
+}
+
+// CUDA kernel to convert integer {0,1} signs directly to Rademacher {-1, +1}
+__global__ void rademacher_from_ints_kernel(int* signs, float* result, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        // Convert integer {0,1} to float {-1,+1}
+        result[idx] = (signs[idx] == 0) ? -1.0f : 1.0f;
+    }
+}
+
+// CUDA kernel to generate 2-powers matrix: s * 2^(-p) where s is ±1 and p is integer [10,30]
+__global__ void twopowers_transform_kernel(int* signs, int* exponents, float* result, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        // Use sign directly: convert 0 to -1, 1 to +1
+        float s = (signs[idx] == 0) ? -1.0f : 1.0f;
+
+        // Use the integer exponent directly (should be in range [10,30])
+        int p = exponents[idx];
+
+        // Compute s * 2^(-p) using ldexpf
+        result[idx] = s * ldexpf(1.0f, -p);
+    }
+}// CUDA kernel for clamping matrix elements to interval (min_val, max_val)
+// CUDA kernel to transform values from interval [a,b] to [c,d]
+// Formula: y = c + (x - a) * (d - c) / (b - a)
+__global__ void transform_interval_kernel(float* data, int n, float a, float b, float c, float d) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float x = data[idx];
+        // Transform from [a,b] to [c,d]
+        float scale = (d - c) / (b - a);
+        data[idx] = c + (x - a) * scale;
+    }
+}
+
+// Simple kernel for integer range transformation
+__global__ void transform_int_range_kernel(int* data, int size, int min_val, int range) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        unsigned int val = ((unsigned int*)data)[idx];
+        data[idx] = min_val + (val % range);
+    }
+}
+
+// Generate integer uniform distribution in range [min_val, max_val] (inclusive)
+void generate_integer_uniform_with_seed(int* d_integers, int m, int n, int min_val, int max_val, unsigned long long seed) {
+    curandGenerator_t gen;
+    curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
+    curandSetPseudoRandomGeneratorSeed(gen, seed);
+
+    size_t total_elements = m * n;
+    curandGenerate(gen, (unsigned int*)d_integers, total_elements);
+
+    // Transform to desired range [min_val, max_val]
+    int range = max_val - min_val + 1;
+    dim3 threads(256);
+    dim3 blocks((total_elements + threads.x - 1) / threads.x);
+
+    // Launch kernel to map to range
+    transform_int_range_kernel<<<blocks, threads>>>(d_integers, total_elements, min_val, range);
+    cudaDeviceSynchronize();
+
+    curandDestroyGenerator(gen);
+}
+
+// Non-seeded version using time(NULL)
+void generate_integer_uniform(int* d_integers, int m, int n, int min_val, int max_val) {
+    generate_integer_uniform_with_seed(d_integers, m, n, min_val, max_val, time(NULL));
+}
+
+// Efficient matrix generation for multi-sample analysis
+// - Works directly on pre-allocated device memory
+// - No file I/O overhead
+// - No memory allocation/deallocation
+// - Supports all matrix types with custom seeds
+void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, unsigned long long seed) {
+    switch (type) {
+        case MATRIX_ODO_WELL_CONDITIONED:
+            generate_matrix_svd_with_seed(d_matrix, n, WELL_COND_NUMBER, seed);
+            break;
+
+        case MATRIX_ODO_ILL_CONDITIONED:
+            generate_matrix_svd_with_seed(d_matrix, n, ILL_COND_NUMBER, seed);
+            break;
+
+        case MATRIX_ZEROMEAN:
+            {
+                // Generate normal distribution with zero mean and std = 1/sqrt(n)
+                // This gives entries with expected magnitude scaling appropriately with matrix size
+                const float mean = 0.0f;
+                const float std = 1.0f / sqrtf((float)n);
+                generate_matrix_distribution_with_seed(d_matrix, n, n, DIST_NORMAL, mean, std, seed);
+            }
+            break;
+
+        case MATRIX_UNIFORM:
+            {
+                // Generate uniform distribution in (0,1) interval
+                const float epsilon = 1e-6f;  // Small margin for open interval
+                generate_matrix_distribution_with_seed(d_matrix, n, n, DIST_UNIFORM,
+                                                      epsilon, 1.0f - epsilon, seed);
+            }
+            break;
+
+        case MATRIX_RADEMACHER:
+            {
+                // Generate Rademacher distribution: entries are +1 or -1 with equal probability
+                // Use integer generation for efficiency (same approach as 2-powers signs)
+                int total_elements = n * n;
+
+                // Allocate temporary memory for signs
+                int *d_signs;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+
+                // Generate integer signs {0,1}
+                generate_integer_uniform_with_seed(d_signs, n, n, 0, 1, seed);
+
+                // Convert directly to Rademacher {-1, +1}
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                rademacher_from_ints_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+            }
+            break;
+
+        case MATRIX_SCALED_2POWERS:
+            {
+                // Generate 2-powers matrix: s * 2^(-p) where s is ±1 and p is integer [10,30]
+                int total_elements = n * n;
+
+                // Allocate temporary memory for signs and exponents
+                int *d_signs, *d_exponents;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+                cudaMalloc(&d_exponents, total_elements * sizeof(int));
+
+                // Generate integer distributions for signs {0,1} and exponents [10,30]
+                generate_integer_uniform_with_seed(d_signs, n, n, 0, 1, seed);
+                generate_integer_uniform_with_seed(d_exponents, n, n, 10, 30, seed + 12345);
+
+                // Transform to 2-powers matrix
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                twopowers_transform_kernel<<<grid_size, block_size>>>(d_signs, d_exponents, d_matrix, total_elements);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+                cudaFree(d_exponents);
+            }
+            break;
+
+        case MATRIX_SKEW_MAGNITUDE:
+            generate_matrix_distribution_with_seed(d_matrix, n, n, DIST_LOG_NORMAL, 0.0f, 2.0f, seed);
+            break;        case MATRIX_FROM_FILE:
+            printf("ERROR: MATRIX_FROM_FILE not supported in generate_matrix_device_with_seed\n");
+            printf("Use get_matrix() for file-based matrix loading\n");
+            // Fill with zeros as fallback
+            cudaMemset(d_matrix, 0, n * n * sizeof(float));
+            break;
+
+        default:
+            printf("Unknown matrix type %d, using moderate SVD conditioning\n", (int)type);
+            generate_matrix_svd_with_seed(d_matrix, n, 10.0f, seed);
+            break;
+    }
+}
+
 // SVD-based matrix generation with controlled condition number
 void generate_matrix_svd(float* d_A, int n, float cond_num) {
     // Use current time as seed for better randomization
@@ -214,34 +403,77 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
     // Generate matrix based on type
     switch (type) {
         case MATRIX_ODO_WELL_CONDITIONED:
-            printf("Generating well-conditioned matrix using SVD (condition number: %.2e)\n", 2.0f);
-            generate_matrix_svd(d_matrix, n, 2.0f);
+            printf("Generating well-conditioned matrix using SVD (condition number: %.2e)\n", WELL_COND_NUMBER);
+            generate_matrix_svd(d_matrix, n, WELL_COND_NUMBER);
             break;
 
         case MATRIX_ODO_ILL_CONDITIONED:
-            printf("Generating ill-conditioned matrix using SVD (condition number: %.2e)\n", 1e6f);
-            generate_matrix_svd(d_matrix, n, 1e6f);
+            printf("Generating ill-conditioned matrix using SVD (condition number: %.2e)\n", ILL_COND_NUMBER);
+            generate_matrix_svd(d_matrix, n, ILL_COND_NUMBER);
             break;
 
-        case MATRIX_NORMAL_DISTRIBUTION:
-            printf("Generating normal distribution matrix (mean: 0.0, std: 1.0)\n");
-            generate_matrix_distribution(d_matrix, n, n, DIST_NORMAL, 0.0f, 1.0f);
+        case MATRIX_ZEROMEAN:
+            printf("Generating zero-mean normal distribution matrix N(0, 1/sqrt(n)) with std=%.6f\n", 1.0f/sqrtf((float)n));
+            generate_matrix_distribution(d_matrix, n, n, DIST_NORMAL, 0.0f, 1.0f/sqrtf((float)n));
             break;
 
-        case MATRIX_SCALED_FTZ:
+        case MATRIX_UNIFORM:
+            printf("Generating uniform distribution matrix in (0,1) interval\n");
             {
-                printf("Generating FTZ-scaled matrix (scale: %.2e)\n", 1e-30f);
-                // First generate normal, then scale to FTZ range
-                generate_matrix_distribution(d_matrix, n, n, DIST_NORMAL, 0.0f, 1.0f);
+                const float epsilon = 1e-6f;
+                generate_matrix_distribution(d_matrix, n, n, DIST_UNIFORM, epsilon, 1.0f - epsilon);
+            }
+            break;
 
-                float ftz_scale = 1e-30f;
-                float* h_matrix = (float*)malloc(n * n * sizeof(float));
-                cudaMemcpy(h_matrix, d_matrix, n * n * sizeof(float), cudaMemcpyDeviceToHost);
-                for (int i = 0; i < n * n; i++) {
-                    h_matrix[i] *= ftz_scale;
-                }
-                cudaMemcpy(d_matrix, h_matrix, n * n * sizeof(float), cudaMemcpyHostToDevice);
-                free(h_matrix);
+        case MATRIX_RADEMACHER:
+            printf("Generating Rademacher distribution matrix (entries = +1 or -1)\n");
+            {
+                // Generate Rademacher using integer generation for efficiency
+                int total_elements = n * n;
+
+                // Allocate temporary memory for signs
+                int *d_signs;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+
+                // Generate integer signs {0,1}
+                generate_integer_uniform(d_signs, n, n, 0, 1);
+
+                // Convert directly to Rademacher {-1, +1}
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                rademacher_from_ints_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+            }
+            break;
+
+        case MATRIX_SCALED_2POWERS:
+            {
+                printf("Generating 2-powers matrix: s * 2^(-p) where s=±1, p∈[10,30]\n");
+                int total_elements = n * n;
+
+                // Allocate temporary memory for signs and exponents
+                int *d_signs, *d_exponents;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+                cudaMalloc(&d_exponents, total_elements * sizeof(int));
+
+                // Generate integer distributions for signs {0,1} and exponents [10,30]
+                generate_integer_uniform(d_signs, n, n, 0, 1);
+                generate_integer_uniform(d_exponents, n, n, 10, 30);
+
+                // Transform to 2-powers matrix
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                twopowers_transform_kernel<<<grid_size, block_size>>>(d_signs, d_exponents, d_matrix, total_elements);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+                cudaFree(d_exponents);
                 break;
             }
 
@@ -300,14 +532,6 @@ void print_matrix_stats(float* matrix, int n, const char* name) {
     printf("  Frobenius norm: %.6e\n", frobenius_norm);
 }
 
-// CUDA kernel to scale uniform values from [0,1) to [min,max)
-__global__ void scale_uniform_kernel(float* data, int n, float min_val, float scale) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) {
-        data[idx] = min_val + data[idx] * scale;
-    }
-}
-
 // Generate matrix with specified distribution (operates on GPU memory)
 // Parameters:
 //   d_matrix: Device memory pointer (must be pre-allocated)
@@ -317,6 +541,50 @@ __global__ void scale_uniform_kernel(float* data, int n, float min_val, float sc
 //     - UNIFORM: param1=min, param2=max
 //     - NORMAL: param1=mean, param2=std_dev
 //     - LOG_NORMAL: param1=log_mean, param2=log_std_dev
+
+// Seeded version for multi-sample analysis
+void generate_matrix_distribution_with_seed(float* d_matrix, int m, int n, DistributionType dist_type,
+                                           float param1, float param2, unsigned long long seed) {
+    curandGenerator_t gen;
+    curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
+    curandSetPseudoRandomGeneratorSeed(gen, seed);
+
+    size_t total_elements = m * n;
+
+    switch (dist_type) {
+        case DIST_UNIFORM:
+            curandGenerateUniform(gen, d_matrix, total_elements);
+            // Transform from [0,1) to [param1, param2)
+            if (param1 != 0.0f || param2 != 1.0f) {
+                dim3 threads(256);
+                dim3 blocks((total_elements + threads.x - 1) / threads.x);
+                transform_interval_kernel<<<blocks, threads>>>(
+                    d_matrix, total_elements,
+                    0.0f, 1.0f,      // from [0, 1)
+                    param1, param2   // to [param1, param2)
+                );
+                cudaDeviceSynchronize();
+            }
+            break;
+
+        case DIST_NORMAL:
+            curandGenerateNormal(gen, d_matrix, total_elements, param1, param2);
+            break;
+
+        case DIST_LOG_NORMAL:
+            curandGenerateLogNormal(gen, d_matrix, total_elements, param1, param2);
+            break;
+
+        default:
+            printf("Unknown distribution type %d, using uniform [0,1)\n", (int)dist_type);
+            curandGenerateUniform(gen, d_matrix, total_elements);
+            break;
+    }
+
+    curandDestroyGenerator(gen);
+}
+
+// Original version (uses time(NULL) for seed)
 void generate_matrix_distribution(float* d_matrix, int m, int n, DistributionType dist_type,
                                  float param1, float param2) {
     curandGenerator_t gen;
@@ -328,12 +596,15 @@ void generate_matrix_distribution(float* d_matrix, int m, int n, DistributionTyp
     switch (dist_type) {
         case DIST_UNIFORM:
             curandGenerateUniform(gen, d_matrix, total_elements);
-            // Scale from [0,1) to [param1, param2)
+            // Transform from [0,1) to [param1, param2)
             if (param1 != 0.0f || param2 != 1.0f) {
-                float scale = param2 - param1;
                 dim3 threads(256);
                 dim3 blocks((total_elements + threads.x - 1) / threads.x);
-                scale_uniform_kernel<<<blocks, threads>>>(d_matrix, total_elements, param1, scale);
+                transform_interval_kernel<<<blocks, threads>>>(
+                    d_matrix, total_elements,
+                    0.0f, 1.0f,      // from [0, 1)
+                    param1, param2   // to [param1, param2)
+                );
                 cudaDeviceSynchronize();
             }
             break;

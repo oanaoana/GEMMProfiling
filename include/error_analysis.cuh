@@ -52,6 +52,9 @@ __device__ float estimate_condition_number_tile(float* tile, int rows, int cols)
 // Matrix standardization
 void standardize_matrix_host(float* h_matrix, int n);
 
+// Theoretical error bound computation
+float compute_beta_factor(KernelType kernel_type, bool single_pass, int n);
+
 // Function declarations for error analysis tests
 void runNumericalAnalysisBenchmarks(bool* enabled_sizes);
 void setupMatrix(float* matrix, int n, MatrixType type, const char* filename);

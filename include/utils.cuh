@@ -29,4 +29,11 @@ void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float
 // Kernel name to type mapping
 KernelType getKernelTypeFromName(const char* name);
 
+// Matrix type name to enum mapping
+MatrixType getMatrixTypeFromName(const char* name);
+
+// Reverse conversion: enum to string
+const char* kernelTypeToString(KernelType kernel_type);
+const char* matrixTypeToString(MatrixType matrix_type);
+
 #endif // UTILS_CUH

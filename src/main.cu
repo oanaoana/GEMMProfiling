@@ -30,8 +30,10 @@ void printUsage() {
     printf("\nOptions:\n");
     printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --complete)\n");
     printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --complete)\n");
+    printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
     printf("  --help                Show this help\n");
     printf("\nAvailable kernels: naive, tiled, tiled_pairwise, tiled_rect, cublas, cublas_tensor, cutlass\n");
+    printf("Available matrix types: wellcond, illcond, zeromean, uniform, 2powers, rademacher, skewed, file\n");
     printf("Available sizes for --all: ");
     for (int i = 0; i < NUM_SIZES; i++) {
         printf("%d ", SIZES[i]);
@@ -41,6 +43,8 @@ void printUsage() {
     printf("  ./main --all\n");
     printf("  ./main --performance --test=tiled --size=1024\n");
     printf("  ./main --error-analysis --test=tiled_pairwise --size=768\n");
+    printf("  ./main --error-analysis --test=tiled_pairwise --size=512 --matrix-type=illcond\n");
+    printf("  ./main --complete --test=tiled_pairwise --size=1024 --matrix-type=normal\n");
     printf("  ./main --complete --test=tiled_pairwise --size=1024\n");
 }
 
@@ -67,6 +71,7 @@ int main(int argc, char **argv) {
     RunMode mode = MODE_NONE;
     char test_name[64] = "";
     int matrix_size = 0;
+    MatrixType matrix_type = MATRIX_ODO_WELL_CONDITIONED; // Default to well-conditioned
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -85,6 +90,14 @@ int main(int argc, char **argv) {
             test_name[sizeof(test_name) - 1] = '\0';
         } else if (strncmp(argv[i], "--size=", 7) == 0) {
             matrix_size = atoi(argv[i] + 7);
+        } else if (strncmp(argv[i], "--matrix-type=", 14) == 0) {
+            MatrixType parsed_type = getMatrixTypeFromName(argv[i] + 14);
+            if (parsed_type == static_cast<MatrixType>(-1)) {
+                printf("Error: Unknown matrix type '%s'\n", argv[i] + 14);
+                printf("Available types: wellcond, illcond, normal, scaled, skewed, file\n");
+                return 1;
+            }
+            matrix_type = parsed_type;
         } else {
             printf("Unknown option: %s\n", argv[i]);
             printUsage();
@@ -152,7 +165,7 @@ int main(int argc, char **argv) {
             char output_name[128];
             snprintf(output_name, sizeof(output_name), "error_analysis_%s", test_name);
 
-            run_multi_sample_analysis(MATRIX_ODO_WELL_CONDITIONED, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
+            run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
             break;
         }
 
@@ -165,7 +178,7 @@ int main(int argc, char **argv) {
             char output_name[128];
             snprintf(output_name, sizeof(output_name), "complete_analysis_%s", test_name);
 
-            run_multi_sample_analysis(MATRIX_ODO_WELL_CONDITIONED, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
+            run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
 
             // Then run performance test
             printf("\n[2/2] Running Performance Test...\n");
