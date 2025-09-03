@@ -33,7 +33,7 @@ void printUsage() {
     printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
     printf("  --help                Show this help\n");
     printf("\nAvailable kernels: naive, tiled, tiled_pairwise, tiled_rect, cublas, cublas_tensor, cutlass\n");
-    printf("Available matrix types: wellcond, illcond, zeromean, uniform, 2powers, rademacher, skewed, file\n");
+    printf("Available matrix types: wellcond, illcond, zeromean, uniform_positive, 2powers, rademacher, sanity, lognormal, file\n");
     printf("Available sizes for --all: ");
     for (int i = 0; i < NUM_SIZES; i++) {
         printf("%d ", SIZES[i]);

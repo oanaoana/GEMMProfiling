@@ -134,10 +134,11 @@ typedef enum {
     MATRIX_ODO_WELL_CONDITIONED,
     MATRIX_ODO_ILL_CONDITIONED,
     MATRIX_ZEROMEAN,
-    MATRIX_UNIFORM,
+    MATRIX_UNIFORM_POSITIVE,
     MATRIX_SCALED_2POWERS,
     MATRIX_RADEMACHER,
-    MATRIX_SKEW_MAGNITUDE,
+    MATRIX_SANITY,          // Original Rademacher (exact ±1) for debugging/verification
+    MATRIX_LOGNORMAL,
     MATRIX_FROM_FILE
 } MatrixType;
 

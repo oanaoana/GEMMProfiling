@@ -321,12 +321,11 @@ MatrixType getMatrixTypeFromName(const char* name) {
     if (strcmp(name, "wellcond") == 0) return MATRIX_ODO_WELL_CONDITIONED;
     if (strcmp(name, "illcond") == 0) return MATRIX_ODO_ILL_CONDITIONED;
     if (strcmp(name, "zeromean") == 0) return MATRIX_ZEROMEAN;
-    if (strcmp(name, "normal") == 0) return MATRIX_ZEROMEAN;  // Keep backward compatibility
-    if (strcmp(name, "uniform") == 0) return MATRIX_UNIFORM;
+    if (strcmp(name, "uniform_positive") == 0) return MATRIX_UNIFORM_POSITIVE;
     if (strcmp(name, "2powers") == 0) return MATRIX_SCALED_2POWERS;
-    if (strcmp(name, "scaled") == 0) return MATRIX_SCALED_2POWERS;  // Keep backward compatibility
     if (strcmp(name, "rademacher") == 0) return MATRIX_RADEMACHER;
-    if (strcmp(name, "skewed") == 0) return MATRIX_SKEW_MAGNITUDE;
+    if (strcmp(name, "sanity") == 0) return MATRIX_SANITY;
+    if (strcmp(name, "lognormal") == 0) return MATRIX_LOGNORMAL;
     if (strcmp(name, "file") == 0) return MATRIX_FROM_FILE;
     return static_cast<MatrixType>(-1); // Return invalid value for unknown names
 }
@@ -352,10 +351,11 @@ const char* matrixTypeToString(MatrixType matrix_type) {
         case MATRIX_ODO_WELL_CONDITIONED: return "wellcond";
         case MATRIX_ODO_ILL_CONDITIONED: return "illcond";
         case MATRIX_ZEROMEAN: return "zeromean";
-        case MATRIX_UNIFORM: return "uniform";
+        case MATRIX_UNIFORM_POSITIVE: return "uniform_positive";
         case MATRIX_SCALED_2POWERS: return "2powers";
         case MATRIX_RADEMACHER: return "rademacher";
-        case MATRIX_SKEW_MAGNITUDE: return "skewed";
+        case MATRIX_SANITY: return "sanity";
+        case MATRIX_LOGNORMAL: return "lognormal";
         case MATRIX_FROM_FILE: return "file";
         default: return "unknown";
     }

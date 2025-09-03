@@ -343,9 +343,9 @@ void runNumericalAnalysisBenchmarks(bool* enabled_sizes) {
         MatrixTestConfig configs[] = {
             {MATRIX_ODO_WELL_CONDITIONED, MATRIX_ODO_WELL_CONDITIONED, "wellcond", "Well-conditioned matrices", NULL, NULL, true},
             {MATRIX_ODO_ILL_CONDITIONED, MATRIX_ODO_ILL_CONDITIONED, "illcond", "Ill-conditioned matrices", NULL, NULL, true},
-            {MATRIX_NORMAL_DISTRIBUTION, MATRIX_NORMAL_DISTRIBUTION, "normal", "Normal distribution matrices", NULL, NULL, true},
-            {MATRIX_SCALED_FTZ, MATRIX_SCALED_FTZ, "scaled", "Scaled matrices near FTZ threshold", NULL, NULL, true},
-            {MATRIX_SKEW_MAGNITUDE, MATRIX_SKEW_MAGNITUDE, "skewed", "Matrices with skewed magnitude distribution", NULL, NULL, true}
+            {MATRIX_ZEROMEAN, MATRIX_ZEROMEAN, "zeromean", "Zero-mean distribution matrices", NULL, NULL, true},
+            {MATRIX_UNIFORM_POSITIVE, MATRIX_UNIFORM_POSITIVE, "uniform_positive", "Uniform positive matrices", NULL, NULL, true},
+            {MATRIX_RADEMACHER, MATRIX_RADEMACHER, "rademacher", "Rademacher distribution matrices", NULL, NULL, true}
         };
 
         int num_configs = sizeof(configs) / sizeof(configs[0]);
@@ -507,7 +507,7 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
         frobenius_errors[sample] = sqrt(frobenius_error);
         frobenius_M_error[sample] = sqrt(frobenius_M);
-        // Compute beta normalized error: empirical_error / (beta * ||M||_F)
+        // Compute beta normalized error: empirical_error / (|A||B|)
         double theoretical_bound = frobenius_M_error[sample];
         normalized_errors[sample] = frobenius_errors[sample] / theoretical_bound;
 
@@ -537,20 +537,39 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     printf("  95th %%ile: %.3e\n", beta_stats.p95);
     printf("  Max: %.3e\n", beta_stats.maximum);
     printf("Theoretical error bound factor (beta): %.6e\n", beta_factor);
-    // Save detailed results to file
+    printf("Average Error_beta/beta: %.6e\n", beta_stats.average/beta_factor);
+    const double u32 = unit_roundoff_fp32();
+    printf("Average Error_beta/u32: %.6e\n", beta_stats.average/u32);
+
+    // Save summary results with metadata to file
     char filename[256];
-    snprintf(filename, sizeof(filename), "data/%s_samples%d_n%d.csv", output_prefix, num_samples, n);
+    snprintf(filename, sizeof(filename), "data/%s_summary_n%d.csv", output_prefix, n);
     fp = fopen(filename, "w");
     if (fp) {
-        fprintf(fp, "sample,frobenius_error\n");
-        for (int i = 0; i < num_samples; i++) {
-            fprintf(fp, "%d,%.10e\n", i, frobenius_errors[i]);
-        }
+        // Write header with all metadata and statistics
+        fprintf(fp, "matrix_type,kernel_type,matrix_size,num_samples,");
+        fprintf(fp, "frob_avg,frob_std,frob_p95,frob_max,");
+        fprintf(fp, "beta_avg,beta_std,beta_p95,beta_max,");
+        fprintf(fp, "theoretical_beta,u32,beta_over_theoretical,beta_over_u32\n");
+
+        // Write single row with all the summary data
+        fprintf(fp, "%s,%s,%d,%d,",
+                matrixTypeToString(matrix_type),
+                kernelTypeToString(kernel_type),
+                n,
+                num_samples);
+        fprintf(fp, "%.10e,%.10e,%.10e,%.10e,",
+                frob_stats.average, frob_stats.std_dev, frob_stats.p95, frob_stats.maximum);
+        fprintf(fp, "%.10e,%.10e,%.10e,%.10e,",
+                beta_stats.average, beta_stats.std_dev, beta_stats.p95, beta_stats.maximum);
+        fprintf(fp, "%.10e,%.10e,%.10e,%.10e\n",
+                beta_factor, u32, beta_stats.average/beta_factor, beta_stats.average/u32);
+
         fclose(fp);
-        printf("\nDetailed results saved to: %s\n", filename);
+        printf("\nSummary results saved to: %s\n", filename);
     }
 
     cudaFree(d_A); cudaFree(d_B); cudaFree(d_C_kernel);
-    free(h_A); free(h_B); free(h_C_kernel); free(h_C_reference);
-    free(frobenius_errors);
+    free(h_A); free(h_B); free(h_C_kernel); free(h_C_reference); free(h_M_abs);
+    free(frobenius_errors); free(frobenius_M_error); free(normalized_errors);
 }

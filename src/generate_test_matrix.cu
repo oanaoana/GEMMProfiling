@@ -187,11 +187,34 @@ __global__ void rademacher_transform_kernel(float* data, int size) {
 }
 
 // CUDA kernel to convert integer {0,1} signs directly to Rademacher {-1, +1}
-__global__ void rademacher_from_ints_kernel(int* signs, float* result, int size) {
+// Unified CUDA kernel to apply random signs from integer {0,1} to {-1,+1}
+// If replace_mode=true: result[i] = sign(signs[i])
+// If replace_mode=false: result[i] *= sign(signs[i])
+__global__ void random_signs_kernel(int* signs, float* result, int size, bool replace_mode) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
-        // Convert integer {0,1} to float {-1,+1}
-        result[idx] = (signs[idx] == 0) ? -1.0f : 1.0f;
+        // Convert integer {0,1} to sign {-1,+1}
+        float sign = (signs[idx] == 0) ? -1.0f : 1.0f;
+
+        if (replace_mode) {
+            // Replace mode: result = sign
+            result[idx] = sign;
+        } else {
+            // Multiply mode: result *= sign
+            result[idx] *= sign;
+        }
+    }
+}
+
+// CUDA kernel to generate jittered Rademacher: sign * (1 + δ) where δ ∈ (-2^(-12), 2^(-12))
+__global__ void rademacher_jittered_kernel(int* signs, float* jitter, float* result, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        // Convert integer {0,1} to sign {-1,+1}
+        float sign = (signs[idx] == 0) ? -1.0f : 1.0f;
+
+        // Apply jitter: sign * (1 + δ) where δ ∈ (-2^(-12), 2^(-12))
+        result[idx] = sign * (1.0f + jitter[idx]);
     }
 }
 
@@ -281,7 +304,7 @@ void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, u
             }
             break;
 
-        case MATRIX_UNIFORM:
+        case MATRIX_UNIFORM_POSITIVE:
             {
                 // Generate uniform distribution in (0,1) interval
                 const float epsilon = 1e-6f;  // Small margin for open interval
@@ -292,8 +315,41 @@ void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, u
 
         case MATRIX_RADEMACHER:
             {
-                // Generate Rademacher distribution: entries are +1 or -1 with equal probability
-                // Use integer generation for efficiency (same approach as 2-powers signs)
+                // Generate jittered Rademacher distribution: sign * (1 + δ) where δ ∈ (-2^(-12), 2^(-12))
+                // This adds small perturbations to the ±1 structure for more realistic numerical analysis
+                int total_elements = n * n;
+
+                // Allocate temporary memory for signs and jitter
+                int *d_signs;
+                float *d_jitter;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+                cudaMalloc(&d_jitter, total_elements * sizeof(float));
+
+                // Generate integer signs {0,1}
+                generate_integer_uniform_with_seed(d_signs, n, n, 0, 1, seed);
+
+                // Generate jitter δ ∈ (-2^(-12), 2^(-12)) = (-1/4096, 1/4096)
+                const float jitter_bound = 1.0f / 4096.0f;  // 2^(-12)
+                generate_matrix_distribution_with_seed(d_jitter, n, n, DIST_UNIFORM,
+                                                      -jitter_bound, jitter_bound, seed + 54321);
+
+                // Convert to jittered Rademacher: sign * (1 + δ)
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                rademacher_jittered_kernel<<<grid_size, block_size>>>(d_signs, d_jitter, d_matrix, total_elements);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+                cudaFree(d_jitter);
+            }
+            break;
+
+        case MATRIX_SANITY:
+            {
+                // Generate original Rademacher distribution: exact ±1 values
+                // Perfect for debugging - should always produce zero errors with exact arithmetic
                 int total_elements = n * n;
 
                 // Allocate temporary memory for signs
@@ -303,11 +359,11 @@ void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, u
                 // Generate integer signs {0,1}
                 generate_integer_uniform_with_seed(d_signs, n, n, 0, 1, seed);
 
-                // Convert directly to Rademacher {-1, +1}
+                // Convert directly to exact Rademacher {-1, +1}
                 int block_size = 256;
                 int grid_size = (total_elements + block_size - 1) / block_size;
 
-                rademacher_from_ints_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements);
+                random_signs_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements, true);
                 cudaDeviceSynchronize();
 
                 // Cleanup temporary memory
@@ -342,9 +398,37 @@ void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, u
             }
             break;
 
-        case MATRIX_SKEW_MAGNITUDE:
-            generate_matrix_distribution_with_seed(d_matrix, n, n, DIST_LOG_NORMAL, 0.0f, 2.0f, seed);
-            break;        case MATRIX_FROM_FILE:
+        case MATRIX_LOGNORMAL:
+            {
+                // Generate signed log-normal distribution: sign * exp(N(0, σ)) where σ ∈ {1, 2}
+                // Random signs ensure zero mean while keeping log-normal magnitude distribution
+                int total_elements = n * n;
+                const float sigma = (n < 1024) ? 1.0f : 2.0f;
+                const float mean = 0.0f;  // Normal distribution mean = 0
+
+                // Allocate temporary memory for signs
+                int *d_signs;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+
+                // Generate positive log-normal values: exp(N(0, σ))
+                generate_matrix_distribution_with_seed(d_matrix, n, n, DIST_LOG_NORMAL, mean, sigma, seed);
+
+                // Generate random signs {0,1} → {-1,+1}
+                generate_integer_uniform_with_seed(d_signs, n, n, 0, 1, seed + 98765);
+
+                // Apply random signs to get zero-mean signed log-normal
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                random_signs_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements, false);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+            }
+            break;
+
+        case MATRIX_FROM_FILE:
             printf("ERROR: MATRIX_FROM_FILE not supported in generate_matrix_device_with_seed\n");
             printf("Use get_matrix() for file-based matrix loading\n");
             // Fill with zeros as fallback
@@ -417,7 +501,7 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
             generate_matrix_distribution(d_matrix, n, n, DIST_NORMAL, 0.0f, 1.0f/sqrtf((float)n));
             break;
 
-        case MATRIX_UNIFORM:
+        case MATRIX_UNIFORM_POSITIVE:
             printf("Generating uniform distribution matrix in (0,1) interval\n");
             {
                 const float epsilon = 1e-6f;
@@ -426,9 +510,42 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
             break;
 
         case MATRIX_RADEMACHER:
-            printf("Generating Rademacher distribution matrix (entries = +1 or -1)\n");
+            printf("Generating jittered Rademacher distribution matrix: sign * (1 + δ), δ ∈ (-2^(-12), 2^(-12))\n");
             {
-                // Generate Rademacher using integer generation for efficiency
+                // Generate jittered Rademacher for more realistic numerical behavior
+                int total_elements = n * n;
+
+                // Allocate temporary memory for signs and jitter
+                int *d_signs;
+                float *d_jitter;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+                cudaMalloc(&d_jitter, total_elements * sizeof(float));
+
+                // Generate integer signs {0,1}
+                generate_integer_uniform(d_signs, n, n, 0, 1);
+
+                // Generate jitter δ ∈ (-2^(-12), 2^(-12)) = (-1/4096, 1/4096)
+                const float jitter_bound = 1.0f / 4096.0f;  // 2^(-12)
+                generate_matrix_distribution(d_jitter, n, n, DIST_UNIFORM,
+                                           -jitter_bound, jitter_bound);
+
+                // Convert to jittered Rademacher: sign * (1 + δ)
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                rademacher_jittered_kernel<<<grid_size, block_size>>>(d_signs, d_jitter, d_matrix, total_elements);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+                cudaFree(d_jitter);
+            }
+            break;
+
+        case MATRIX_SANITY:
+            printf("Generating SANITY matrix: exact Rademacher ±1 (for debugging/verification)\n");
+            {
+                // Generate original exact Rademacher - perfect for sanity checks
                 int total_elements = n * n;
 
                 // Allocate temporary memory for signs
@@ -438,11 +555,11 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
                 // Generate integer signs {0,1}
                 generate_integer_uniform(d_signs, n, n, 0, 1);
 
-                // Convert directly to Rademacher {-1, +1}
+                // Convert directly to exact Rademacher {-1, +1}
                 int block_size = 256;
                 int grid_size = (total_elements + block_size - 1) / block_size;
 
-                rademacher_from_ints_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements);
+                random_signs_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements, true);
                 cudaDeviceSynchronize();
 
                 // Cleanup temporary memory
@@ -477,9 +594,37 @@ bool get_matrix(float* matrix, int n, MatrixType type, const char* custom_filena
                 break;
             }
 
-        case MATRIX_SKEW_MAGNITUDE:
-            printf("Generating skewed magnitude matrix using log-normal distribution\n");
-            generate_matrix_distribution(d_matrix, n, n, DIST_LOG_NORMAL, 0.0f, 2.0f);
+        case MATRIX_LOGNORMAL:
+            {
+                // Generate signed log-normal distribution: sign * exp(N(0, σ)) where σ ∈ {1, 2}
+                // Random signs ensure zero mean while keeping log-normal magnitude distribution
+                int total_elements = n * n;
+                const float sigma = (n < 1024) ? 1.0f : 2.0f;
+                const float mean = 0.0f;  // Normal distribution mean = 0
+
+                printf("Generating signed log-normal distribution matrix: sign * exp(N(0, %.1f))\n", sigma);
+
+                // Allocate temporary memory for signs
+                int *d_signs;
+                cudaMalloc(&d_signs, total_elements * sizeof(int));
+
+                // Generate positive log-normal values: exp(N(0, σ))
+                generate_matrix_distribution(d_matrix, n, n, DIST_LOG_NORMAL, mean, sigma);
+
+                // Generate random signs {0,1} → {-1,+1} (use deterministic seed based on matrix address)
+                uintptr_t address_seed = reinterpret_cast<uintptr_t>(d_matrix);
+                generate_integer_uniform_with_seed(d_signs, n, n, 0, 1, static_cast<unsigned long long>(address_seed));
+
+                // Apply random signs to get zero-mean signed log-normal
+                int block_size = 256;
+                int grid_size = (total_elements + block_size - 1) / block_size;
+
+                random_signs_kernel<<<grid_size, block_size>>>(d_signs, d_matrix, total_elements, false);
+                cudaDeviceSynchronize();
+
+                // Cleanup temporary memory
+                cudaFree(d_signs);
+            }
             break;
 
         case MATRIX_FROM_FILE:
