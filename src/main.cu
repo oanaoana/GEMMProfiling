@@ -16,6 +16,7 @@ typedef enum {
     MODE_NONE = 0,
     MODE_PERFORMANCE,
     MODE_ERROR_ANALYSIS,
+    MODE_ULP_ANALYSIS,
     MODE_COMPLETE_ANALYSIS,
     MODE_ALL_BENCHMARKS
 } RunMode;
@@ -26,10 +27,11 @@ void printUsage() {
     printf("  --all                 Run all benchmark tests and sizes\n");
     printf("  --performance         Run performance test for specific kernel/size\n");
     printf("  --error-analysis      Run error analysis for specific kernel/size\n");
+    printf("  --ulp-analysis        Run ULP analysis for specific kernel/size\n");
     printf("  --complete            Run both error analysis AND performance test for kernel/size\n");
     printf("\nOptions:\n");
-    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --complete)\n");
-    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --complete)\n");
+    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --complete)\n");
+    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --complete)\n");
     printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
     printf("  --help                Show this help\n");
     printf("\nAvailable kernels: naive, tiled, tiled_pairwise, tiled_rect, cublas, cublas_tensor, cutlass\n");
@@ -44,6 +46,7 @@ void printUsage() {
     printf("  ./main --performance --test=tiled --size=1024\n");
     printf("  ./main --error-analysis --test=tiled_pairwise --size=768\n");
     printf("  ./main --error-analysis --test=tiled_pairwise --size=512 --matrix-type=illcond\n");
+    printf("  ./main --ulp-analysis --test=tiled --size=512 --matrix-type=wellcond\n");
     printf("  ./main --complete --test=tiled_pairwise --size=1024 --matrix-type=normal\n");
     printf("  ./main --complete --test=tiled_pairwise --size=1024\n");
 }
@@ -83,6 +86,8 @@ int main(int argc, char **argv) {
             mode = MODE_PERFORMANCE;
         } else if (strcmp(argv[i], "--error-analysis") == 0) {
             mode = MODE_ERROR_ANALYSIS;
+        } else if (strcmp(argv[i], "--ulp-analysis") == 0) {
+            mode = MODE_ULP_ANALYSIS;
         } else if (strcmp(argv[i], "--complete") == 0) {
             mode = MODE_COMPLETE_ANALYSIS;
         } else if (strncmp(argv[i], "--test=", 7) == 0) {
@@ -107,19 +112,19 @@ int main(int argc, char **argv) {
 
     // Validate arguments
     if (mode == MODE_NONE) {
-        printf("Error: Must specify a mode (--all, --performance, or --error-analysis)\n");
+        printf("Error: Must specify a mode (--all, --performance, --error-analysis, --ulp-analysis, or --complete)\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS) && strlen(test_name) == 0) {
-        printf("Error: --test=NAME is required for performance, error analysis, and complete modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS) && strlen(test_name) == 0) {
+        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, and complete modes\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS) && matrix_size <= 0) {
-        printf("Error: --size=N is required for performance, error analysis, and complete modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS) && matrix_size <= 0) {
+        printf("Error: --size=N is required for performance, error analysis, ULP analysis, and complete modes\n");
         printUsage();
         return 1;
     }
@@ -166,6 +171,17 @@ int main(int argc, char **argv) {
             snprintf(output_name, sizeof(output_name), "error_analysis_%s", test_name);
 
             run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
+            break;
+        }
+
+        case MODE_ULP_ANALYSIS: {
+            printf("\nRunning ULP analysis: %s at size %d\n", test_name, matrix_size);
+
+            KernelType kernel_type = getKernelTypeFromName(test_name);
+            char output_name[128];
+            snprintf(output_name, sizeof(output_name), "ulp_analysis_%s", test_name);
+
+            run_ulp_samples_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
             break;
         }
 

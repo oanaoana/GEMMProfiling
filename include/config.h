@@ -63,6 +63,11 @@
 #define MAX_LEVELS 10
 #endif
 
+#ifndef NUM_BINS
+#define NUM_BINS 9
+#endif
+
+
 // ============================================================================
 // PRECISION AND UNIT ROUNDOFF CONSTANTS
 // ============================================================================
@@ -115,6 +120,7 @@ typedef enum {
     KERNEL_CUBLAS_TENSOR,
     KERNEL_CUTLASS,
     KERNEL_CUTLASS_TENSOR,
+    KERNEL_HELPER_1D,  // For 1D helper kernels like element-wise operations
     KERNEL_COUNT  // For iteration
 } KernelType;
 
@@ -233,6 +239,12 @@ inline void compute_kernel_dimensions_template<KERNEL_CUTLASS_TENSOR>(int n, dim
     *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
 }
 
+template<>
+inline void compute_kernel_dimensions_template<KERNEL_HELPER_1D>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(256);  // Standard 1D block size for element-wise operations
+    *numBlocks = dim3((n + 256 - 1) / 256);
+}
+
 // Runtime dispatch function that calls the appropriate template specialization
 inline void compute_kernel_dimensions_dispatch(KernelType kernel_type, int n, dim3* threadsPerBlock, dim3* numBlocks) {
     switch(kernel_type) {
@@ -257,12 +269,22 @@ inline void compute_kernel_dimensions_dispatch(KernelType kernel_type, int n, di
         case KERNEL_CUTLASS_TENSOR:
             compute_kernel_dimensions_template<KERNEL_CUTLASS_TENSOR>(n, threadsPerBlock, numBlocks);
             break;
+        case KERNEL_HELPER_1D:
+            compute_kernel_dimensions_template<KERNEL_HELPER_1D>(n, threadsPerBlock, numBlocks);
+            break;
         default:
             // Default fallback
             *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
             *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
             break;
     }
+}
+
+// 1D kernel dimension dispatch function for helper kernels
+inline void compute_kernel_dimensions_dispatch_1D(int total_elements, int* threadsPerBlock, int* numBlocks) {
+    // Standard 1D configuration for element-wise operations
+    *threadsPerBlock = 256;  // Optimal block size for most GPUs
+    *numBlocks = (total_elements + 256 - 1) / 256;
 }
 
 // Helper function to convert string name to KernelType enum
@@ -274,6 +296,7 @@ inline KernelType string_to_kernel_type(const char* kernel_name) {
     if (strcmp(kernel_name, "cublas_tensor") == 0) return KERNEL_CUBLAS_TENSOR;
     if (strcmp(kernel_name, "cutlass") == 0) return KERNEL_CUTLASS;
     if (strcmp(kernel_name, "cutlass_tensor") == 0) return KERNEL_CUTLASS_TENSOR;
+    if (strcmp(kernel_name, "helper_1d") == 0) return KERNEL_HELPER_1D;
     return KERNEL_NAIVE; // Default fallback
 }
 

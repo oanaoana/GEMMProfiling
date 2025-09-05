@@ -10,6 +10,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
+#include <algorithm>  // for std::max
+#include <string>     // for std::to_string
 
 // Device function for atomic add with double precision
 __device__ double atomicAddDouble(double* address, double val) {
@@ -28,6 +30,14 @@ __global__ void compute_matrix_abs_kernel(float* matrix, float* abs_matrix, int 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         abs_matrix[idx] = fabsf(matrix[idx]);
+    }
+}
+
+// Conversion kernel from double to float
+__global__ void convert_fp64_to_fp32_kernel(double* d_input, float* d_output, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        d_output[idx] = (float)d_input[idx];
     }
 }
 
@@ -541,7 +551,268 @@ __global__ void ulp_metrics_kernel(const float* __restrict__ Ctest,
     }
 }
 
+// ULP histogram bins and representative values (narrow then doubling)
+__device__ __forceinline__ int ulp_bin(uint32_t d){
+    if (d == 0u) return 0;
+    if (d == 1u) return 1;
+    if (d == 2u) return 2;
+    if (d <= 4u)  return 3;
+    if (d <= 8u)  return 4;
+    if (d <= 16u) return 5;
+    if (d <= 32u) return 6;
+    if (d <= 64u) return 7;
+    return 8;
+}
+
+__device__ __forceinline__ void atomicAdd_f64(double* addr, double val) {
+#if __CUDA_ARCH__ >= 600
+    atomicAdd(addr, val);
+#else
+    atomicAddDouble(addr, val);
+#endif
+}
+
+// ----- fused streaming kernel -----
+__global__ void ulp_stream_hist_kernel(const float* __restrict__ Ctest,
+                                       const float* __restrict__ Cref,
+                                       unsigned long long* __restrict__ gBins,   // [NUM_BINS]
+                                       double* __restrict__ gErrSum,             // scalar
+                                       double* __restrict__ gErrSumSq,           // scalar
+                                       unsigned long long* __restrict__ gCount,  // scalar
+                                       unsigned long long* __restrict__ gInvalid,// scalar
+                                       unsigned long long* __restrict__ gRefZeroOrSub,  // count of ref entries with exp==0
+                                       int n)
+{
+    __shared__ unsigned long long sBins[NUM_BINS];
+    if (threadIdx.x < NUM_BINS) sBins[threadIdx.x] = 0ull;
+    __syncthreads();
+
+    // Local accumulators to reduce atomic pressure
+    double locErrSum = 0.0, locErrSumSq = 0.0;
+    unsigned long long locCount = 0, locInvalid = 0, locRefZeroOrSub = 0;
+
+    const int stride = gridDim.x * blockDim.x;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        float ct = Ctest[i], cr = Cref[i];
+        if (!isfinite(ct) || !isfinite(cr)) { ++locInvalid; continue; }
+
+        uint32_t d = ulp_distance(ct, cr);
+        int b = ulp_bin(d);
+        atomicAdd(&sBins[b], 1ull);
+
+        // scaled error: |Δ| / ULP(ref)
+        float ulp = ulp_of(cr);
+        uint32_t ur = __float_as_uint(cr);
+        bool is_sub_or_zero = ((ur & 0x7F800000u) == 0u);  // exp==0 (zero or subnormal)
+        float e = is_sub_or_zero ? float(d) : fabsf(ct - cr) / ulp_of(cr);
+
+        if (is_sub_or_zero) ++locRefZeroOrSub;
+
+        locErrSum += (double)e;
+        locErrSumSq += (double)e * (double)e;
+        ++locCount;
+    }
+    __syncthreads();
+
+    // Merge block-local histogram into global
+    if (threadIdx.x < NUM_BINS) atomicAdd(&gBins[threadIdx.x], sBins[threadIdx.x]);
+
+    // Flush per-thread locals (ALL threads do this)
+    atomicAdd_f64(gErrSum,   locErrSum);
+    atomicAdd_f64(gErrSumSq, locErrSumSq);
+    atomicAdd(gCount,   locCount);
+    atomicAdd(gInvalid, locInvalid);
+    atomicAdd(gRefZeroOrSub, locRefZeroOrSub);
+}
+
+// Wilson CI for a pooled proportion
+static inline std::pair<double,double> wilson_ci(unsigned long long s, unsigned long long n, double conf=0.95){
+    if (n==0) return {NAN,NAN};
+    const double z = 1.959963984540054; // 95%
+    const double phat = double(s)/double(n);
+    const double z2 = z*z, denom = 1.0 + z2/double(n);
+    const double center = (phat + z2/(2.0*double(n))) / denom;
+    const double half   = (z * std::sqrt( (phat*(1.0-phat))/double(n) + z2/(4.0*double(n)*double(n)) )) / denom;
+    return {std::max(0.0, center - half), std::min(1.0, center + half)};
+}
+
+// Percentile from 9-bin pooled histogram (returns an upper-bound representative)
+static inline uint32_t percentile_ulps(const unsigned long long B[NUM_BINS], double p){
+    unsigned long long tot=0; for(int i=0;i<NUM_BINS;++i) tot += B[i];
+    if (!tot) return 0u;
+    unsigned long long thr = (unsigned long long)std::ceil(p * double(tot));
+    unsigned long long acc=0;
+    for (int i=0;i<NUM_BINS;++i){ acc += B[i]; if (acc >= thr) return BIN_REP_UPPER[i]; }
+    return BIN_REP_UPPER[NUM_BINS-1];
+}
+
+// Sum counts for all bins whose upper edge <= K (e.g., K=1 -> bins 0 and 1)
+static inline unsigned long long successes_le_k(const unsigned long long B[NUM_BINS], uint32_t K){
+    unsigned long long s = 0;
+    for (int i=0;i<NUM_BINS;++i) if (BIN_REP_UPPER[i] <= K) s += B[i];
+    return s;
+}
+
+static inline unsigned long long sum_bins(const unsigned long long B[NUM_BINS]){
+    unsigned long long s=0; for (int i=0;i<NUM_BINS;++i) s+=B[i]; return s;
+}
+
+void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
+    printf("\n=== ULP Analysis ===\n");
+    printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
+           (int)matrix_type, (int)kernel_type, n, n, num_samples);
+
+    size_t size = n * n * sizeof(float);
+    size_t size_fp64 = n * n * sizeof(double);
+    float *d_A, *d_B, *d_C_kernel;
+    double *d_C_reference_fp64;  // FP64 reference result
+    float *d_C_reference_fp32;   // FP32 reference for ULP comparison
+
+    cudaMalloc(&d_A, size);
+    cudaMalloc(&d_B, size);
+    cudaMalloc(&d_C_kernel, size);
+    cudaMalloc(&d_C_reference_fp64, size_fp64);
+    cudaMalloc(&d_C_reference_fp32, size);
+
+    // Create cuBLAS handle for reference computation
+    cublasHandle_t cublas_handle;
+    cublasCreate(&cublas_handle);
+
+    // ULP histogram and statistics accumulators
+    unsigned long long *dBins, *dCount, *dInvalid, *dRefZeroOrSub;
+    double *dSum, *dSumSq;
+
+    cudaMalloc(&dBins, NUM_BINS * sizeof(unsigned long long));
+    cudaMalloc(&dCount, sizeof(unsigned long long));
+    cudaMalloc(&dInvalid, sizeof(unsigned long long));
+    cudaMalloc(&dRefZeroOrSub, sizeof(unsigned long long));
+    cudaMalloc(&dSum, sizeof(double));
+    cudaMalloc(&dSumSq, sizeof(double));
+
+    // Initialize accumulators (these accumulate across all samples)
+    cudaMemset(dBins, 0, NUM_BINS * sizeof(unsigned long long));
+    cudaMemset(dCount, 0, sizeof(unsigned long long));
+    cudaMemset(dInvalid, 0, sizeof(unsigned long long));
+    cudaMemset(dRefZeroOrSub, 0, sizeof(unsigned long long));
+    cudaMemset(dSum, 0, sizeof(double));
+    cudaMemset(dSumSq, 0, sizeof(double));
+
+    // Configure kernel launch parameters
+    dim3 threadsPerBlock, numBlocks;
+    compute_kernel_dimensions_dispatch(kernel_type, n, &threadsPerBlock, &numBlocks);
+
+    // Configure 1D parameters for ULP analysis kernel
+    int total_elements = n * n;
+    int block_size_1d, grid_size_1d;
+    compute_kernel_dimensions_dispatch_1D(total_elements, &block_size_1d, &grid_size_1d);
+
+    printf("Running %d samples...\n", num_samples);
+
+    // For each matrix sample s
+    unsigned long long base_seed = (unsigned long long)time(NULL);
+    for (int s = 0; s < num_samples; ++s) {
+        if (s % 10 == 0 && s > 0) {
+            printf("Completed %d/%d samples...\n", s, num_samples);
+        }
+
+        // Generate new matrices for this sample using the specified matrix type
+        // Use different seeds for each sample to ensure truly random matrices
+        auto seedA = base_seed ^ (0x9E3779B97F4A7C15ull + (unsigned long long)s*0xBF58476D1CE4E5B9ull);
+        auto seedB = seedA ^ 0x94D049BB133111EBull;
+
+        generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
+        generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
+
+        // Launch the specified kernel using unified dispatch
+        launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+
+        // Compute FP64 reference directly on device using same configuration as test kernel
+        // This ensures consistency with the cuBLAS kernel configuration from gemms.cu
+        compute_reference_fp64_device<<<numBlocks, threadsPerBlock>>>(d_A, d_B, d_C_reference_fp64, n);
+
+        // Convert FP64 reference to FP32 for ULP comparison
+        convert_fp64_to_fp32_kernel<<<grid_size_1d, block_size_1d>>>(d_C_reference_fp64, d_C_reference_fp32, total_elements);
+
+        // Stream this matrix's entries into the SAME accumulators (no reset)
+        ulp_stream_hist_kernel<<<grid_size_1d, block_size_1d>>>(
+            d_C_kernel, d_C_reference_fp32, dBins, dSum, dSumSq, dCount, dInvalid, dRefZeroOrSub, total_elements);
+    }
+
+    printf("Completed all %d samples\n", num_samples);
+
+    // Copy results back to host
+    unsigned long long hBins[NUM_BINS];
+    unsigned long long hCount, hInvalid, hRefZeroOrSub;
+    double hSum, hSumSq;
+
+    cudaMemcpy(hBins, dBins, NUM_BINS * sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&hCount, dCount, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&hInvalid, dInvalid, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&hRefZeroOrSub, dRefZeroOrSub, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&hSum, dSum, sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&hSumSq, dSumSq, sizeof(double), cudaMemcpyDeviceToHost);
+
+    // Histogram (counts)
+    const unsigned long long total_from_bins = sum_bins(hBins);   // authoritative
+    const unsigned long long total_from_counter = hCount;         // sanity check
+    if (total_from_bins != total_from_counter) {
+        fprintf(stderr, "[warn] sum(hBins)=%llu != hCount=%llu — using sum(hBins) for normalization\n",
+                total_from_bins, total_from_counter);
+    }
+    const unsigned long long TOTAL = total_from_bins ? total_from_bins : total_from_counter;
+
+    printf("Histogram (counts):\n");
+    for (int i = 0; i < NUM_BINS; ++i) {
+        double pct = TOTAL ? 100.0 * (double)hBins[i] / (double)TOTAL : 0.0;
+        printf("  %-5s : %10llu  (%6.2f%%)\n", BIN_LABELS[i], hBins[i], pct);
+    }
+
+    // Proportions and CI
+    const unsigned long long s_le1 = successes_le_k(hBins, 1);     // bins 0 and 1 with your scheme
+    const double frac0   = TOTAL ? (double)hBins[0] / (double)TOTAL : 0.0;
+    const double fracle1 = TOTAL ? (double)s_le1   / (double)TOTAL : 0.0;
+    auto [ci_lo, ci_hi]  = wilson_ci(s_le1, TOTAL);
+
+    // Percentiles (integer ULP)
+    uint32_t p95 = percentile_ulps(hBins, 0.95);
+    uint32_t p99 = percentile_ulps(hBins, 0.99);
+
+    // Scaled error stats (|Δ| / ULP(ref)) from your dSum/dSumSq
+    double mean_scaled = TOTAL ? hSum / (double)TOTAL : NAN;
+    double var_scaled  = TOTAL ? std::max(0.0, (hSumSq / (double)TOTAL) - mean_scaled*mean_scaled) : NAN;
+    double std_scaled  = TOTAL ? std::sqrt(var_scaled) : NAN;
+
+    // Invalids
+    double frac_invalid = (hCount + hInvalid) ? (double)hInvalid / (double)(hCount + hInvalid) : 0.0;
+
+    // Headline
+    printf("frac(ULP=0)          : %.6f\n", frac0);
+    printf("frac(ULP<=1)         : %.6f  (Wilson 95%% CI: [%.6f, %.6f])\n", fracle1, ci_lo, ci_hi);
+    printf("p95 ULP (≤)          : %s\n", (p95==UINT32_MAX? ">=65" : std::to_string(p95).c_str()));
+    printf("p99 ULP (≤)          : %s\n", (p99==UINT32_MAX? ">=65" : std::to_string(p99).c_str()));
+    printf("scaled |Δ|/ULP(ref)  : mean=%.6e, std=%.6e\n", mean_scaled, std_scaled);
+    printf("invalid fraction     : %.6f\n", frac_invalid);
+    printf("reference sub/zero   : %llu / %llu (%.6f%% of total)\n", hRefZeroOrSub, TOTAL, TOTAL ? 100.0 * (double)hRefZeroOrSub / (double)TOTAL : 0.0);
+
+    // Cleanup
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C_kernel);
+    cudaFree(d_C_reference_fp64);
+    cudaFree(d_C_reference_fp32);
+    cudaFree(dBins);
+    cudaFree(dCount);
+    cudaFree(dInvalid);
+    cudaFree(dSum);
+    cudaFree(dSumSq);
+    cublasDestroy(cublas_handle);
+}
+
 // Efficient multi-sample testing for specific matrix type and kernel
+// Uses consistent kernel configurations for fair error analysis:
+// - Test kernel: Uses kernel-specific optimized configuration
+// - Reference: Uses standard 2D tiled configuration (kernel-independent)
+// - Helper kernels: Use standard 1D configurations (efficient for element-wise ops)
 void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
     printf("\n=== Multi-Sample Analysis ===\n");
     printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
@@ -584,13 +855,23 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     // Declare variables that might be accessed after goto
     FILE* fp = NULL;
 
-    // Configure kernel launch parameters
+    // Configure kernel launch parameters for the test kernel
+    // NOTE: Different kernels use different optimal configurations:
+    // - Reference: Uses standard 2D tiled configuration for consistency
+    // - Helper kernels: Use 1D linear configurations for efficiency
     dim3 threadsPerBlock, numBlocks;
     compute_kernel_dimensions_dispatch(kernel_type, n, &threadsPerBlock, &numBlocks);
+
+    // Configure 1D parameters for helper kernels
+    int total_elements = n * n;
+    int block_size_1d, grid_size_1d;
+    compute_kernel_dimensions_dispatch_1D(total_elements, &block_size_1d, &grid_size_1d);
+    size_t shared_mem_size = 2 * block_size_1d * sizeof(double);  // For error and norm arrays
 
     printf("Running %d samples...\n", num_samples);
 
     // Run multiple samples
+    unsigned long long base_seed = (unsigned long long)time(NULL);
     for (int sample = 0; sample < num_samples; sample++) {
         if (sample % 10 == 0 && sample > 0) {
             printf("Completed %d/%d samples...\n", sample, num_samples);
@@ -598,25 +879,21 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
         // Generate new matrices for this sample using the specified matrix type
         // Use different seeds for each sample to ensure truly random matrices
-        unsigned long long base_seed = (unsigned long long)time(NULL);
-        generate_matrix_device_with_seed(d_A, n, matrix_type, base_seed + sample * 1000);
-        generate_matrix_device_with_seed(d_B, n, matrix_type, base_seed + sample * 1000 + 1);
+        auto seedA = base_seed ^ (0x9E3779B97F4A7C15ull + (unsigned long long)sample*0xBF58476D1CE4E5B9ull);
+        auto seedB = seedA ^ 0x94D049BB133111EBull;
+        generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
+        generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
 
-        // Compute FP64 reference directly on device (no host transfers!)
-        dim3 block_ref(TILE_SIZE, TILE_SIZE);
-        dim3 grid_ref((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
-        compute_reference_fp64_device<<<grid_ref, block_ref>>>(d_A, d_B, d_C_reference_fp64, n);
+        // Compute FP64 reference directly on device using same configuration as test kernel
+        // This ensures consistency with the cuBLAS kernel configuration from gemms.cu
+        compute_reference_fp64_device<<<numBlocks, threadsPerBlock>>>(d_A, d_B, d_C_reference_fp64, n);
 
         // Launch the specified kernel using unified dispatch
         launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
 
         // Compute absolute value matrices on device for norm computation (convert to FP64)
-        int total_elements = n * n;
-        // Use same block size as main GEMM kernels for consistency
-        int block_size = threadsPerBlock.x * threadsPerBlock.y;  // Match main kernel block size
-        int grid_size = (total_elements + block_size - 1) / block_size;
-        compute_matrix_abs_fp64_kernel<<<grid_size, block_size>>>(d_A, d_A_abs, total_elements);
-        compute_matrix_abs_fp64_kernel<<<grid_size, block_size>>>(d_B, d_B_abs, total_elements);
+        compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_A, d_A_abs, total_elements);
+        compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_B, d_B_abs, total_elements);
 
         // Compute |A| * |B| using cuBLAS (double precision)
         const double alpha = 1.0, beta = 0.0;
@@ -627,8 +904,8 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         cudaMemset(d_error_results, 0, 2 * sizeof(double));
 
         // Compute errors entirely on device
-        size_t shared_mem_size = 2 * block_size * sizeof(double);  // For error and norm arrays
-        compute_frobenius_error_kernel<<<grid_size, block_size, shared_mem_size>>>(
+
+        compute_frobenius_error_kernel<<<grid_size_1d, block_size_1d, shared_mem_size>>>(
             d_C_kernel, d_C_reference_fp64, d_abs_AB_product, d_error_results, n);
 
         cudaDeviceSynchronize();
