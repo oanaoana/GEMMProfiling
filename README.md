@@ -12,14 +12,16 @@ GEMMProfiling/
 │   ├── main.cu                  # Main application entry point
 │   ├── benchmark.cu             # Performance benchmarking routines
 │   ├── gemms.cu                 # GEMM implementations (naive, tiled, cuBLAS, etc.)
-│   ├── numerical_analysis.cu    # Backward error analysis kernels and functions
-│   ├── error_tests.cu           # Modular error testing framework
+│   ├── error_analysis.cu        # ULP analysis and statistical error analysis
+│   ├── generate_test_matrix.cu  # Matrix generation utilities
+│   ├── config.cu                # Configuration and constants
 │   └── utils.cu                 # Utility functions and memory management
 ├── include/                     # Header files
 │   ├── benchmark.h              # Benchmark function declarations
 │   ├── gemms.cuh                # GEMM implementation headers
-│   ├── numerical_analysis.cuh   # Numerical analysis headers
-│   ├── error_tests.cuh          # Error testing framework headers
+│   ├── error_analysis.cuh       # ULP analysis and statistical functions
+│   ├── generate_test_matrix.cuh # Matrix generation utilities
+│   ├── config.h                 # Configuration constants
 │   └── utils.cuh                # Utility function headers
 ├── scripts/                     # Python analysis and plotting scripts
 │   ├── plot_numerical_analysis.py  # Visualize numerical analysis results
@@ -59,114 +61,85 @@ This repository contains multiple GEMM implementations, each with different tili
 
 ## Numerical Analysis Framework
 
-### Error Testing Modules
+### ULP (Units in the Last Place) Analysis
 
-The project includes a modular error testing framework (`src/error_tests.cu`) with three main components:
+The project now focuses on **ULP-based error analysis**, providing statistically rigorous numerical accuracy assessment:
 
-1. **setupMatrix()**: Configures different matrix types
-   - Random matrices (uniform distribution)
-   - Well-conditioned matrices (near-identity structure)
-   - Ill-conditioned matrices (Hilbert-like)
-   - Support for loading matrices from files
+1. **ULP Distance Computation**:
+   - Computes exact ULP distance between kernel results and FP64 reference
+   - Uses FP64 computation with single rounding to FP32 for highest precision reference
+   - Handles special cases (infinities, NaN, sign differences)
 
-2. **runMatrixTests()**: Executes numerical analysis on configured matrix pairs
-   - Performs tiled GEMM with error tracking
-   - Computes condition numbers for each tile
-   - Analyzes error propagation patterns
+2. **Statistical Analysis**:
+   - 9-bin histogram analysis of ULP distribution: [0, 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65+]
+   - Wilson confidence intervals for robust proportion estimation
+   - Percentile calculations (50th, 90th, 95th, 99th percentiles)
 
-3. **generateReport()**: Creates summary statistics and reports
-   - Aggregates results across all test configurations
-   - Generates CSV files for further analysis
-   - Provides statistical summaries
+3. **Multi-Sample Analysis**:
+   - Tests multiple random matrix pairs for statistical robustness
+   - Independent seed generation using cryptographic-quality hash functions
+   - Aggregated statistics across all samples
 
-### Error Analysis Details
+### Analysis Types
 
-The backward error analysis focuses on:
+#### ULP Analysis
+```bash
+# Run ULP analysis with statistical measures
+./main --ulp-analysis --test=cublas --size=256
+```
 
-1. **Tile-Level Condition Numbers**: Full condition number estimation for each tile using:
-   - Gershgorin circle theorem for eigenvalue bounds
-   - Frobenius norm calculations
-   - Power iteration approximations for large tiles
+**Output includes:**
+- ULP distance histogram with 9 bins
+- Wilson confidence intervals for each bin
+- Key percentiles (50th, 90th, 95th, 99th)
+- Statistical summary of numerical accuracy
 
-2. **Error Accumulation Tracking**: Monitors how errors propagate during computation:
-   - Absolute errors compared to cuBLAS reference
-   - Relative errors normalized by magnitude
-   - Accumulated floating-point errors during tile operations
+#### Multi-Sample Error Analysis
+```bash
+# Run comprehensive multi-sample analysis
+./main --error-analysis --test=tiled --size=512
+```
 
-3. **Statistical Analysis**: Comprehensive error characterization:
-   - Error distribution across the result matrix
-   - Boundary effects at tile edges
-   - Correlation between condition numbers and error magnitude
+**Features:**
+- Multiple independent matrix samples
+- Frobenius norm error computation
+- Statistical aggregation across samples
+- Robust error characterization
 
-### Matrix Test Types
+### Matrix Generation
 
-The framework automatically tests multiple matrix configurations:
+The framework supports various matrix types for comprehensive testing:
 
-- **Random**: Uniformly distributed elements, moderate condition numbers
-- **Well-conditioned**: Near-identity structure, low condition numbers
-- **Ill-conditioned**: Hilbert-like matrices, very high condition numbers
-- **Custom**: Support for loading problem-specific matrices
+- **MATRIX_RANDOM**: Standard uniform random distribution [0,1]
+- **MATRIX_ODO_WELL_CONDITIONED**: Near-identity matrices with low condition numbers
+- **MATRIX_ODO_ILL_CONDITIONED**: Matrices with high condition numbers for stress testing
+- **MATRIX_ZEROMEAN**: Zero-mean uniform distribution [-0.5, 0.5]
+- **MATRIX_UNIFORM_POSITIVE**: Positive uniform distribution [0.1, 1.0]
+- **MATRIX_RADEMACHER**: Random ±1 values (Rademacher distribution)
+- **MATRIX_LOAD_FROM_FILE**: Load custom matrices from binary files
 
 ## Unified Kernel Launch Architecture
 
-The project uses a **unified kernel dispatch system** that provides both maintainability and optimal performance:
-
-### Architecture Overview
+The project uses a **unified kernel dispatch system** for maintainability and performance:
 
 ```cpp
-// Centralized kernel dispatch with function pointer optimization
-KernelType kernel_type = getKernelTypeFromName("tiled_pairwise");  // Once per test
-launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, blocks, threads);  // Zero overhead
+// Centralized kernel dispatch
+KernelType kernel_type = getKernelTypeFromName("tiled_pairwise");
+launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, blocks, threads);
 ```
 
-### Implementation Details
-
-**String-to-Enum Lookup** (happens once per test):
-```cpp
-KernelType getKernelTypeFromName(const char* name) {
-    if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
-    // ... other mappings
-}
-```
-
-**Optimized Dispatch** (zero overhead during timing):
-```cpp
-static KernelFunc kernel_function_table[] = {
-    launch_naive, launch_tiled, launch_tiled_opt, // ...
-};
-
-void launch_kernel_by_type(KernelType kernel_type, ...) {
-    kernel_function_table[kernel_type](...);  // Direct function pointer call
-}
-```
-
-### Performance Characteristics
-
-| Aspect | Previous Approaches | Unified Dispatch |
-|--------|-------------------|------------------|
-| **Lookup Overhead** | String comparison every call | String lookup once per test |
-| **Dispatch Overhead** | Function pointer OR switch | Direct function pointer (array access) |
-| **Maintainability** | Dual systems to maintain | Single centralized dispatch |
-| **Type Safety** | Runtime validation | Compile-time enum validation |
-| **Extensibility** | Update multiple locations | Add enum + function to table |
-
-### Benefits
-
-- ✅ **Zero Runtime Overhead**: Direct function pointer calls during performance-critical timing loops
-- ✅ **Single Source of Truth**: All kernel dispatch logic in one location (`src/utils.cu`)
+Benefits:
+- ✅ **Zero Runtime Overhead**: Direct function pointer calls during timing
+- ✅ **Single Source of Truth**: All dispatch logic centralized in `src/utils.cu`
 - ✅ **Type Safe**: Compile-time validation with enum-based kernel types
-- ✅ **Easy Extension**: Add new kernels by extending enum and function table
-- ✅ **Consistent**: Both benchmark and error analysis use identical dispatch mechanism
+- ✅ **Easy Extension**: Add new kernels by extending enum and function table## Tools and Visualization
 
-This architecture gives you the performance of the original function pointer approach with the maintainability benefits of centralized dispatch.## Tools and Visualization
+This repository includes analysis tools for:
 
-This repository includes several analysis tools:
-
-- **Roofline Analysis**: Performance visualization showing arithmetic intensity vs. computational throughput
-- **Numerical Error Visualization**: Heatmaps showing error distribution across the result matrix
-- **Tile Boundary Analysis**: Specialized analysis of error behavior at tile boundaries
-- **Statistical Error Analysis**: Comparison of error distributions across different implementations
-- **Condition Number Analysis**: Visualization of how matrix conditioning affects numerical stability
+- **ULP Analysis**: Statistical analysis of Units in Last Place error distributions
+- **Multi-Sample Analysis**: Robust error characterization across multiple test cases
+- **Performance Benchmarking**: Roofline analysis and throughput measurement
+- **Statistical Visualization**: Error distribution plots with confidence intervals
 
 ## Building and Running
 
@@ -207,48 +180,61 @@ The build system will:
 # Show all available options
 ./main --help
 
-# Run all benchmarks with default matrix size (1024x1024)
-./main
+# Run all benchmarks with default matrix sizes
+./main --all
 
-# Run specific GEMM implementation
-./main --test=tiled --size=512
+# Run specific GEMM implementation performance test
+./main --performance --test=tiled --size=512
 
-# Run with result verification enabled
-./main --test=cublas --size=256 --verify
+# Run ULP analysis
+./main --ulp-analysis --test=cublas --size=256
 ```
 
 #### Performance Benchmarking
 
 ```bash
 # Run comprehensive performance analysis
-./main --all --size=1024
+./main --all
 
-# Run specific implementation with verification
-./main --test=tiled --size=512 --verify
+# Run specific implementation with performance testing
+./main --performance --test=tiled --size=512
 
 # Quick benchmark of all implementations
-./main --test=all --size=256
+./main --all
 ```
 
-#### Numerical Analysis
+#### ULP Analysis
 
-The numerical analysis module provides comprehensive backward error analysis:
+The ULP analysis provides the most precise numerical accuracy assessment:
 
 ```bash
-# Run numerical analysis with default settings
-./main --numerical-analysis --size=1024
+# Run ULP analysis on specific implementation
+./main --ulp-analysis --test=cublas --size=512
 
-# Run analysis on specific matrix size
-./main --numerical-analysis --size=512
+# Run ULP analysis with specific matrix type
+./main --ulp-analysis --test=tiled --size=1024 --matrix-type=illcond
+```
 
-# Run with verification enabled
-./main --numerical-analysis --size=1024 --verify
+This generates:
+- ULP distance histogram with Wilson confidence intervals
+- Percentile analysis of ULP distribution
+- Statistical summary of numerical errors
+- Comparison against FP64 reference computation
+
+#### Multi-Sample Error Analysis
+
+```bash
+# Run comprehensive error analysis
+./main --error-analysis --test=tiled --size=1024
+
+# Run with specific matrix types
+./main --error-analysis --test=cublas --size=512 --matrix-type=wellcond
 ```
 
 This will generate:
-- Raw error data: `data/numerical_analysis_*.dat`
-- Summary statistics: `data/numerical_analysis_summary.csv`
-- Performance data: `data/roofline_data.csv`
+- Frobenius norm error analysis across multiple samples
+- Statistical aggregation of error metrics
+- Robust characterization of implementation accuracy
 
 #### Available Test Types
 
@@ -283,15 +269,14 @@ The visualization scripts will:
 
 #### Testing Different Matrix Types
 
-The error testing framework supports different matrix types:
+The error analysis automatically tests multiple matrix types:
 
 ```bash
-# The numerical analysis automatically tests:
-# - Random matrices
-# - Well-conditioned matrices
-# - Ill-conditioned matrices
-# - Hilbert matrices (highly ill-conditioned)
-./main --numerical-analysis --size=1024
+# ULP analysis tests all supported matrix types automatically
+./main --ulp-analysis --test=cublas --size=1024
+
+# Error analysis uses random matrices by default
+./main --error-analysis --test=tiled --size=512
 ```
 
 #### Custom Tile Size Analysis
@@ -299,10 +284,10 @@ The error testing framework supports different matrix types:
 To test different tile sizes, modify the `TILE_SIZE` definition in the source code:
 
 ```bash
-# Edit src/gemms.cu or relevant headers to change TILE_SIZE
+# Edit include/config.h to change TILE_SIZE
 # Then recompile and run
 make clean && make
-./main --numerical-analysis --size=1024
+./main --ulp-analysis --test=tiled --size=1024
 ```
 
 #### Architecture-Specific Tests
@@ -330,24 +315,32 @@ make
   - `all`: Run all available implementations
 
 ### Verification and Analysis
-- `--verify`: Enable result verification against cuBLAS
-- `--no-verify`: Disable result verification (default)
-- `--verify=true/false`: Explicitly set verification mode
-- `--numerical-analysis`: Perform comprehensive backward error analysis
+- `--ulp-analysis`: Perform ULP (Units in Last Place) analysis with statistical measures
+- `--error-analysis`: Run multi-sample error analysis with Frobenius norm computation
+- `--performance`: Run performance benchmarking only
+- `--complete`: Run both error analysis and performance testing
+- `--matrix-type=TYPE`: Specify matrix type for analysis (optional)
 
 ### Example Commands
 
 ```bash
 # Performance benchmarking
-./main --test=tiled --size=512 --verify
-./main --all --size=1024
+./main --performance --test=tiled --size=512
+./main --all
 
-# Numerical error analysis
-./main --numerical-analysis --size=1024
-./main --numerical-analysis --size=512 --verify
+# ULP analysis
+./main --ulp-analysis --test=cublas --size=1024
+./main --ulp-analysis --test=tiled --size=512 --matrix-type=illcond
+
+# Multi-sample error analysis
+./main --error-analysis --test=tiled --size=1024
+./main --error-analysis --test=cublas --size=512 --matrix-type=wellcond
+
+# Complete analysis (both error and performance)
+./main --complete --test=tiled --size=1024
 
 # Quick testing
-./main --test=cublas --size=256
+./main --performance --test=cublas --size=256
 ```
 
 ## Output Files and Data Organization
@@ -356,11 +349,15 @@ make
 
 All generated data is automatically saved to the `data/` directory:
 
-**Numerical Analysis:**
-- `numerical_analysis_random_n{size}_tile{TILE_SIZE}.dat`: Random matrix analysis
-- `numerical_analysis_wellcond_n{size}_tile{TILE_SIZE}.dat`: Well-conditioned matrix analysis
-- `numerical_analysis_illcond_n{size}_tile{TILE_SIZE}.dat`: Ill-conditioned matrix analysis
-- `numerical_analysis_summary.csv`: Summary statistics across all tests
+**ULP Analysis Data:**
+- ULP histogram data with statistical measures
+- Wilson confidence intervals for robust proportion estimation
+- Percentile analysis (50th, 90th, 95th, 99th percentiles)
+
+**Error Analysis Data:**
+- Multi-sample Frobenius norm error data
+- Statistical aggregation across samples
+- Comprehensive error characterization
 
 **Performance Data:**
 - `roofline_data.csv`: Performance benchmarking results for roofline analysis
@@ -368,10 +365,10 @@ All generated data is automatically saved to the `data/` directory:
 ### Visualization Outputs
 
 Generated plots are saved to the `plots/` directory:
-- `numerical_analysis_*_heatmaps.png`: Error distribution heatmaps
-- `numerical_analysis_*_tile_analysis.png`: Tile-level error analysis
-- `numerical_analysis_summary.png`: Overview of all test results
-- `roofline_model.png`: Performance roofline plots
+- ULP analysis visualizations showing error distribution
+- Statistical plots with confidence intervals and percentiles
+- Multi-sample error analysis plots
+- Performance roofline plots
 
 ## Workflow Examples
 
@@ -381,31 +378,34 @@ Generated plots are saved to the `plots/` directory:
 # 1. Build the project
 make clean && make
 
-# 2. Run comprehensive numerical analysis
-./main --numerical-analysis --size=1024
+# 2. Run ULP analysis for precise error measurement
+./main --ulp-analysis --test=cublas --size=1024
 
-# 3. Generate visualizations
+# 3. Run multi-sample error analysis
+./main --error-analysis --test=tiled --size=1024
+
+# 4. Generate visualizations (if visualization scripts available)
 cd scripts/
-python plot_numerical_analysis.py
+python plot_error_analysis.py
 python plot_roofline.py
 
-# 4. View results
+# 5. View results
 ls ../plots/                    # Check generated plots
-cat ../data/numerical_analysis_summary.csv  # View summary statistics
+cat ../data/error_analysis_summary.txt  # View summary statistics
 ```
 
 ### Performance Comparison Workflow
 
 ```bash
 # 1. Compare different implementations
-./main --test=naive --size=512 --verify
-./main --test=tiled --size=512 --verify
-./main --test=cublas --size=512 --verify
+./main --performance --test=naive --size=512
+./main --performance --test=tiled --size=512
+./main --performance --test=cublas --size=512
 
 # 2. Run full benchmark suite
-./main --all --size=1024
+./main --all
 
-# 3. Analyze performance characteristics
+# 3. Analyze performance characteristics (if scripts available)
 cd scripts/
 python plot_roofline.py
 ```
@@ -414,13 +414,13 @@ python plot_roofline.py
 
 ```bash
 # 1. Test with small matrices during development
-./main --numerical-analysis --size=256
+./main --ulp-analysis --test=tiled --size=256
 
-# 2. Verify correctness
-./main --test=tiled --size=512 --verify
+# 2. Verify correctness with performance test
+./main --performance --test=tiled --size=512
 
-# 3. Profile specific scenarios
-./main --test=tiled --size=1024 --numerical-analysis
+# 3. Comprehensive error analysis
+./main --error-analysis --test=tiled --size=1024
 
 # 4. Check architecture-specific behavior
 cd arch-tests/
@@ -459,27 +459,27 @@ Additional memory is required for intermediate results and analysis data.
 
 ## Results and Key Findings
 
-The backward error analysis has revealed several important insights:
+The ULP-based error analysis has revealed several important insights:
 
-### Tile Size Impact
-- Larger tiles generally provide better numerical properties due to reduced boundary effects
-- Smaller tiles show increased error accumulation at tile boundaries
-- Optimal tile size depends on matrix conditioning and hardware characteristics
+### ULP Distribution Patterns
+- Most accurate implementations show concentrated ULP distribution in lower bins (0-2 ULP)
+- Different GEMM implementations exhibit distinct ULP distribution signatures
+- Wilson confidence intervals provide robust statistical characterization of implementation accuracy
 
-### Error Patterns
-- Error accumulation patterns differ significantly between implementations
-- Certain tiling strategies show elevated errors at tile boundaries vs. tile interiors
-- Hierarchical tiling can reduce boundary-related error accumulation
+### Statistical Measures
+- 50th percentile ULP distances characterize typical accuracy
+- 95th and 99th percentiles reveal worst-case error behavior
+- Confidence intervals enable rigorous comparison between implementations
 
-### Matrix Conditioning Effects
-- Matrix condition number amplifies differences between tiling strategies
-- Ill-conditioned matrices show much larger variations in backward error
-- Well-conditioned matrices demonstrate more consistent error behavior across implementations
+### Implementation Comparison
+- cuBLAS typically provides best overall accuracy with tight ULP distributions
+- Custom tiling strategies show varying accuracy depending on tile size and algorithm
+- FP64 reference computation ensures highest precision baseline for comparison
 
-### Performance vs. Accuracy Tradeoffs
-- Observable tradeoffs between computational performance and numerical accuracy
-- cuBLAS provides best balance of performance and accuracy for most cases
-- Custom tiling allows fine-tuning for specific accuracy requirements
+### Matrix Properties Impact
+- Matrix conditioning affects ULP distribution spread
+- Random matrices provide good baseline for general accuracy assessment
+- Well-conditioned vs ill-conditioned matrices reveal implementation robustness
 
 ## Future Work
 
@@ -498,8 +498,25 @@ The backward error analysis has revealed several important insights:
 
 ## License
 
-[Add your license information here]
+MIT License
 
-## Acknowledgements
+Copyright (c) 2025 Oana Marin
 
-[Add acknowledgements as needed]
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+

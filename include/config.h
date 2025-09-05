@@ -63,11 +63,6 @@
 #define MAX_LEVELS 10
 #endif
 
-#ifndef NUM_BINS
-#define NUM_BINS 9
-#endif
-
-
 // ============================================================================
 // PRECISION AND UNIT ROUNDOFF CONSTANTS
 // ============================================================================

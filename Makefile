@@ -24,7 +24,7 @@ endif
 LIBS = -lcublas -lcusolver -lcurand
 
 # Source files
-SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/error_analysis.cu $(SRC_DIR)/generate_test_matrix.cu $(SRC_DIR)/config.cu $(SRC_DIR)/matrix_utils.cu
+SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/error_analysis.cu $(SRC_DIR)/generate_test_matrix.cu $(SRC_DIR)/config.cu
 
 # Object files
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.o)
