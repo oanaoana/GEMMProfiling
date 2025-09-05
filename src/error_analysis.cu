@@ -11,6 +11,90 @@
 #include <stdio.h>
 #include <time.h>
 
+// Device function for atomic add with double precision
+__device__ double atomicAddDouble(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+
+// GPU kernels for device-only error computation
+__global__ void compute_matrix_abs_kernel(float* matrix, float* abs_matrix, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        abs_matrix[idx] = fabsf(matrix[idx]);
+    }
+}
+
+__global__ void compute_matrix_abs_fp64_kernel(float* matrix, double* abs_matrix, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        abs_matrix[idx] = fabs((double)matrix[idx]);
+    }
+}
+
+__global__ void compute_frobenius_error_kernel(float* C_kernel, double* C_reference,
+                                             double* abs_AB_product, double* error_results, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_elements = n * n;
+
+    // Dynamic shared memory for flexible block sizes
+    extern __shared__ double shared_mem[];
+    double* shared_error = shared_mem;
+    double* shared_norm = shared_mem + blockDim.x;
+
+    int tid = threadIdx.x;
+    double local_error = 0.0;
+    double local_norm = 0.0;
+
+    // Each thread processes multiple elements if needed
+    for (int i = idx; i < total_elements; i += blockDim.x * gridDim.x) {
+        double diff = (double)C_kernel[i] - C_reference[i];  // FP64 difference
+        local_error += diff * diff;
+
+        // Use the precomputed |A|*|B| product
+        double norm_val = (double)abs_AB_product[i];
+        local_norm += norm_val * norm_val;
+    }
+
+    shared_error[tid] = local_error;
+    shared_norm[tid] = local_norm;
+    __syncthreads();
+
+    // Reduction in shared memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_error[tid] += shared_error[tid + stride];
+            shared_norm[tid] += shared_norm[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    // Write results
+    if (tid == 0) {
+        atomicAddDouble(&error_results[0], shared_error[0]);  // Frobenius error squared
+        atomicAddDouble(&error_results[1], shared_norm[0]);   // Norm squared
+    }
+}
+
+__global__ void compute_reference_fp64_device(float* A, float* B, double* C, int n) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < n && col < n) {
+        double sum = 0.0;
+        for (int k = 0; k < n; k++) {
+            sum += (double)A[row * n + k] * (double)B[k * n + col];
+        }
+        C[row * n + col] = sum;
+    }
+}
+
 // Kernel to analyze round-off errors during tiled GEMM
 __global__ void analyze_tiled_gemm_errors(
     float *A, float *B, float *C_result, float *C_reference,
@@ -404,18 +488,58 @@ float compute_beta_factor(KernelType kernel_type, bool single_pass, int n) {
     return (float)(beta_inner + beta_outer);
 }
 
-// // Choose the right u: usually FP32 accumulation
-// inline double beta_for_inner_k(int k, bool single_pass=true,
-//                                int tile_b=0, int num_tiles=0, bool pairwise=false) {
-//     const double u = unit_roundoff_fp32(); // change if accumulating in FP64, etc.
-//     if (single_pass) return gamma(k, u);
-//     // two-stage: micro-accumulate b, then reduce across t tiles
-//     int b = tile_b, t = num_tiles;
-//     if (b <= 0 || t <= 0) return gamma(k, u); // fallback
-//     double beta_b = gamma(b, u);
-//     double beta_t = pairwise ? gamma(ceil_log2_int(t), u) : gamma(t, u);
-//     return beta_b + beta_t; // conservative; cross-terms are O(u^2)
-// }
+// Integer ULP distance between two FP32 values.
+__device__ __forceinline__ int32_t ord(float x) {
+    int32_t i = __float_as_int(x);
+    return (i < 0) ? 0x80000000 - i : i + 0x80000000;
+}
+
+__device__ __forceinline__ uint32_t ulp_distance(float a, float b) {
+    int32_t da = ord(a), db = ord(b);
+    int32_t d  = da - db;
+    return (d < 0) ? uint32_t(-d) : uint32_t(d);
+}
+
+// Size of one ULP at x (FP32)
+__device__ __forceinline__ float ulp_of(float x) {
+    if (!isfinite(x)) return NAN;
+    x = fabsf(x);
+    if (x == 0.0f) return ldexpf(1.0f, -149);  // subnormal spacing
+    uint32_t u = __float_as_uint(x);
+    uint32_t exp = (u >> 23) & 0xFFu;
+    if (exp == 0u) return ldexpf(1.0f, -149);
+    int e = int(exp) - 127;
+    return ldexpf(1.0f, e - 23);               // 2^(e-23)
+}
+
+__global__ void ulp_metrics_kernel(const float* __restrict__ Ctest,
+                                   const float* __restrict__ Cref,
+                                   uint32_t* __restrict__ dULP,   // out: integer ULP distance
+                                   float* __restrict__ errULP,    // out: scaled err (may be nullptr)
+                                   unsigned long long* __restrict__ invalid_count, // NaN/Inf pairs
+                                   int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    float ct = Ctest[i];
+    float cr = Cref[i];
+
+    if (!isfinite(ct) || !isfinite(cr)) {
+        dULP[i] = 0;
+        if (errULP) errULP[i] = NAN;
+        atomicAdd(invalid_count, 1ull);
+        return;
+    }
+
+    dULP[i] = ulp_distance(ct, cr);
+
+    if (errULP) {
+        float ulp = ulp_of(cr);
+        float e = fabsf(ct - cr) / ulp;   // uses spacing at the reference
+        errULP[i] = e;
+    }
+}
 
 // Efficient multi-sample testing for specific matrix type and kernel
 void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
@@ -424,8 +548,9 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
            (int)matrix_type, (int)kernel_type, n, n, num_samples);
 
     // Compute theoretical error bound factor
-    // Use single_pass=false for tiled kernels, single_pass=true for naive kernel comparison
-    bool single_pass = (kernel_type == KERNEL_NAIVE);
+    // Use single_pass=false for tiled_pairwise kernel, single_pass=true for the rest
+    bool single_pass = true;
+    if (kernel_type == KERNEL_TILED_PAIRWISE) single_pass=false;
     float beta_factor = compute_beta_factor(kernel_type, single_pass, n);
     // Allocate device memory (reused across all samples)
     size_t size = n * n * sizeof(float);
@@ -434,14 +559,24 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     cudaMalloc(&d_B, size);
     cudaMalloc(&d_C_kernel, size);
 
-    // Allocate host memory for matrices and results
-    float *h_A = (float*)malloc(size);
-    float *h_B = (float*)malloc(size);
-    float *h_C_kernel = (float*)malloc(size);
-    float *h_C_reference = (float*)malloc(size);
-    float *h_M_abs = (float*)malloc(size);
+    // Device memory for optimized error computation (no host transfers needed)
+    double *d_C_reference_fp64;  // FP64 reference result
+    double *d_A_abs, *d_B_abs;   // Absolute value matrices for norm computation (FP64)
+    double *d_abs_AB_product;    // Product |A| * |B| (FP64)
+    double *d_error_results;     // Error computation results [frobenius², norm²]
 
-    // Statistics array for Frobenius norm only
+    size_t size_fp64 = n * n * sizeof(double);
+    cudaMalloc(&d_C_reference_fp64, size_fp64);
+    cudaMalloc(&d_A_abs, size_fp64);
+    cudaMalloc(&d_B_abs, size_fp64);
+    cudaMalloc(&d_abs_AB_product, size_fp64);  // For |A| * |B| product (FP64)
+    cudaMalloc(&d_error_results, 2 * sizeof(double));  // [error², norm²]
+
+    // Create cuBLAS handle for |A| * |B| computation
+    cublasHandle_t cublas_handle;
+    cublasCreate(&cublas_handle);
+
+    // Host memory only for final statistics (much smaller)
     double *frobenius_errors = (double*)malloc(num_samples * sizeof(double));
     double *frobenius_M_error = (double*)malloc(num_samples * sizeof(double));
     double *normalized_errors = (double*)malloc(num_samples * sizeof(double));
@@ -467,46 +602,43 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         generate_matrix_device_with_seed(d_A, n, matrix_type, base_seed + sample * 1000);
         generate_matrix_device_with_seed(d_B, n, matrix_type, base_seed + sample * 1000 + 1);
 
-        // Copy matrices to host for CPU FP64 reference computation
-        cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_B, d_B, size, cudaMemcpyDeviceToHost);
-
-        // Compute reference result using GPU FP64 (much faster than CPU)
-        compute_C_reference_gpu_fp64(h_A, h_B, h_C_reference, n);
+        // Compute FP64 reference directly on device (no host transfers!)
+        dim3 block_ref(TILE_SIZE, TILE_SIZE);
+        dim3 grid_ref((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+        compute_reference_fp64_device<<<grid_ref, block_ref>>>(d_A, d_B, d_C_reference_fp64, n);
 
         // Launch the specified kernel using unified dispatch
         launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
 
+        // Compute absolute value matrices on device for norm computation (convert to FP64)
+        int total_elements = n * n;
+        // Use same block size as main GEMM kernels for consistency
+        int block_size = threadsPerBlock.x * threadsPerBlock.y;  // Match main kernel block size
+        int grid_size = (total_elements + block_size - 1) / block_size;
+        compute_matrix_abs_fp64_kernel<<<grid_size, block_size>>>(d_A, d_A_abs, total_elements);
+        compute_matrix_abs_fp64_kernel<<<grid_size, block_size>>>(d_B, d_B_abs, total_elements);
+
+        // Compute |A| * |B| using cuBLAS (double precision)
+        const double alpha = 1.0, beta = 0.0;
+        cublasDgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
+                    &alpha, d_B_abs, n, d_A_abs, n, &beta, d_abs_AB_product, n);
+
+        // Reset error accumulation array
+        cudaMemset(d_error_results, 0, 2 * sizeof(double));
+
+        // Compute errors entirely on device
+        size_t shared_mem_size = 2 * block_size * sizeof(double);  // For error and norm arrays
+        compute_frobenius_error_kernel<<<grid_size, block_size, shared_mem_size>>>(
+            d_C_kernel, d_C_reference_fp64, d_abs_AB_product, d_error_results, n);
+
         cudaDeviceSynchronize();
 
-        // Copy GPU result back to host for error computation
-        cudaMemcpy(h_C_kernel, d_C_kernel, size, cudaMemcpyDeviceToHost);        // Compute Frobenius error for this sample
-        double frobenius_error = 0.0;
-        double frobenius_M = 0.0;
+        // Copy only the final error results (2 doubles instead of n² floats!)
+        double host_error_results[2];
+        cudaMemcpy(host_error_results, d_error_results, 2 * sizeof(double), cudaMemcpyDeviceToHost);
 
-        // Copy matrices to host for CPU FP64 reference computation
-        cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_B, d_B, size, cudaMemcpyDeviceToHost);
-
-        // Take absolute values on host arrays
-        for (int i = 0; i < n * n; i++) {
-            h_A[i] = fabsf(h_A[i]);
-            h_B[i] = fabsf(h_B[i]);
-        }
-
-        // Compute reference result using GPU FP64 (much faster than CPU)
-        compute_C_reference_gpu_fp64(h_A, h_B, h_M_abs, n);
-
-
-        for (int i = 0; i < n * n; i++) {
-            double diff_C = fabsf(h_C_kernel[i] - h_C_reference[i]);
-            frobenius_error += diff_C * diff_C;
-            double M_val = h_M_abs[i];
-            frobenius_M += M_val * M_val;
-        }
-
-        frobenius_errors[sample] = sqrt(frobenius_error);
-        frobenius_M_error[sample] = sqrt(frobenius_M);
+        frobenius_errors[sample] = sqrt(host_error_results[0]);
+        frobenius_M_error[sample] = sqrt(host_error_results[1]);
         // Compute beta normalized error: empirical_error / (|A||B|)
         double theoretical_bound = frobenius_M_error[sample];
         normalized_errors[sample] = frobenius_errors[sample] / theoretical_bound;
@@ -543,14 +675,15 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     // Save summary results with metadata to file
     char filename[256];
-    snprintf(filename, sizeof(filename), "data/%s_summary_n%d.csv", output_prefix, n);
+    snprintf(filename, sizeof(filename), "data/%s_%s_summary_n%d.csv",
+             output_prefix, matrixTypeToString(matrix_type), n);
     fp = fopen(filename, "w");
     if (fp) {
         // Write header with all metadata and statistics
         fprintf(fp, "matrix_type,kernel_type,matrix_size,num_samples,");
         fprintf(fp, "frob_avg,frob_std,frob_p95,frob_max,");
         fprintf(fp, "beta_avg,beta_std,beta_p95,beta_max,");
-        fprintf(fp, "theoretical_beta,u32,beta_over_theoretical,beta_over_u32\n");
+        fprintf(fp, "theoretical_beta,u32,E_{AB}/beta,E_{AB}/u\n");
 
         // Write single row with all the summary data
         fprintf(fp, "%s,%s,%d,%d,",
@@ -569,7 +702,14 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         printf("\nSummary results saved to: %s\n", filename);
     }
 
+    // Cleanup device memory
     cudaFree(d_A); cudaFree(d_B); cudaFree(d_C_kernel);
-    free(h_A); free(h_B); free(h_C_kernel); free(h_C_reference); free(h_M_abs);
+    cudaFree(d_C_reference_fp64); cudaFree(d_A_abs); cudaFree(d_B_abs);
+    cudaFree(d_abs_AB_product); cudaFree(d_error_results);
+
+    // Cleanup cuBLAS handle
+    cublasDestroy(cublas_handle);
+
+    // Cleanup host memory (much less now!)
     free(frobenius_errors); free(frobenius_M_error); free(normalized_errors);
 }
