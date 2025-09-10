@@ -48,9 +48,9 @@ def load_systematic_data(data_dir="data"):
             reader = csv.DictReader(f)
             for row in reader:
                 # Convert numeric fields
-                numeric_fields = ['matrix_size', 'num_samples', 'frob_avg', 'frob_std',
-                                'frob_p95', 'frob_max', 'beta_avg', 'beta_std',
-                                'beta_p95', 'beta_max', 'theoretical_beta', 'u32',
+                numeric_fields = ['matrix_size', 'num_samples', '|C-C_ref|_avg', '|C-C_ref|_std',
+                                '|C-C_ref|_p95', '|C-C_ref|_max', '|C-C_ref|/(|A||B|)_avg', '|C-C_ref|/(|A||B|)_std',
+                                '|C-C_ref|/(|A||B|)_p95', '|C-C_ref|/(|A||B|)_max', 'theoretical_beta', 'u32',
                                 'E_{AB}/beta', 'E_{AB}/u']
                 for field in numeric_fields:
                     if field in row and row[field]:
@@ -118,7 +118,7 @@ def analyze_by_kernel(data):
     kernel_stats = defaultdict(list)
 
     for row in data:
-        kernel_stats[row['kernel_type']].append(row['beta_avg'])
+        kernel_stats[row['kernel_type']].append(row['|C-C_ref|/(|A||B|)_avg'])
 
     print(f"{'Kernel':<15} {'Count':<6} {'Avg Error':<12} {'Std Dev':<12} {'Min Error':<12} {'Max Error':<12}")
     print("-" * 75)
@@ -150,7 +150,7 @@ def analyze_by_matrix_type(data):
     matrix_stats = defaultdict(list)
 
     for row in data:
-        matrix_stats[row['matrix_type']].append(row['beta_avg'])
+        matrix_stats[row['matrix_type']].append(row['|C-C_ref|/(|A||B|)_avg'])
 
     print(f"{'Matrix Type':<15} {'Count':<6} {'Avg Error':<12} {'Std Dev':<12} {'Min Error':<12} {'Max Error':<12}")
     print("-" * 75)
@@ -184,7 +184,7 @@ def analyze_scaling_with_size(data):
 
     for row in data:
         key = (row['kernel_type'], row['matrix_type'])
-        groups[key].append((int(row['matrix_size']), row['beta_avg']))
+        groups[key].append((int(row['matrix_size']), row['|C-C_ref|/(|A||B|)_avg']))
 
     print("Analyzing error growth patterns...")
 
@@ -223,17 +223,17 @@ def find_best_worst_cases(data):
     print("BEST AND WORST CASES")
     print("="*60)
 
-    # Sort by beta_avg
-    sorted_data = sorted(data, key=lambda x: x['beta_avg'])
+    # Sort by |C-C_ref|/(|A||B|)_avg
+    sorted_data = sorted(data, key=lambda x: x['|C-C_ref|/(|A||B|)_avg'])
 
     print("🏆 TOP 5 BEST (Lowest Error):")
     for i, row in enumerate(sorted_data[:5], 1):
-        print(f"  {i}. {row['kernel_type']} + {row['matrix_type']} @ n={int(row['matrix_size'])}: {row['beta_avg']:.3e}")
+        print(f"  {i}. {row['kernel_type']} + {row['matrix_type']} @ n={int(row['matrix_size'])}: {row['|C-C_ref|/(|A||B|)_avg']:.3e}")
         print(f"     E_AB/beta: {row['E_{AB}/beta']:.3f}")
 
     print("\n💥 TOP 5 WORST (Highest Error):")
     for i, row in enumerate(sorted_data[-5:], 1):
-        print(f"  {i}. {row['kernel_type']} + {row['matrix_type']} @ n={int(row['matrix_size'])}: {row['beta_avg']:.3e}")
+        print(f"  {i}. {row['kernel_type']} + {row['matrix_type']} @ n={int(row['matrix_size'])}: {row['|C-C_ref|/(|A||B|)_avg']:.3e}")
         print(f"     E_AB/beta: {row['E_{AB}/beta']:.3f}")
 
 def generate_summary_report(data, filename="data/systematic_analysis_report.txt"):
@@ -250,7 +250,7 @@ def generate_summary_report(data, filename="data/systematic_analysis_report.txt"
         f.write(f"Sizes: {sorted(set(int(row['matrix_size']) for row in data))}\n\n")
 
         # Overall statistics
-        all_errors = [row['beta_avg'] for row in data]
+        all_errors = [row['|C-C_ref|/(|A||B|)_avg'] for row in data]
         f.write(f"Overall Error Statistics:\n")
         f.write(f"  Mean: {statistics.mean(all_errors):.3e}\n")
         f.write(f"  Median: {statistics.median(all_errors):.3e}\n")
@@ -260,10 +260,10 @@ def generate_summary_report(data, filename="data/systematic_analysis_report.txt"
 
         # Detailed data
         f.write("DETAILED RESULTS:\n")
-        f.write("kernel,matrix_type,size,beta_avg,beta_std,E_AB/beta\n")
+        f.write("kernel,matrix_type,size,|C-C_ref|/(|A||B|)_avg,|C-C_ref|/(|A||B|)_std,E_AB/beta\n")
         for row in sorted(data, key=lambda x: (x['kernel_type'], x['matrix_type'], x['matrix_size'])):
             f.write(f"{row['kernel_type']},{row['matrix_type']},{int(row['matrix_size'])},"
-                   f"{row['beta_avg']:.6e},{row['beta_std']:.6e},{row['E_{AB}/beta']:.3f}\n")
+                   f"{row['|C-C_ref|/(|A||B|)_avg']:.6e},{row['|C-C_ref|/(|A||B|)_std']:.6e},{row['E_{AB}/beta']:.3f}\n")
 
     print(f"\nDetailed report saved to: {filename}")
 
@@ -311,7 +311,7 @@ def create_kernel_comparison_plot(df, output_dir):
     plt.figure(figsize=(12, 8))
 
     # Calculate statistics by kernel
-    kernel_stats = df.groupby('kernel_type')['beta_avg'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
+    kernel_stats = df.groupby('kernel_type')['|C-C_ref|/(|A||B|)_avg'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
     kernel_stats = kernel_stats.sort_values('mean')
 
     # Create bar plot with error bars
@@ -342,7 +342,7 @@ def create_matrix_type_comparison_plot(df, output_dir):
     plt.figure(figsize=(14, 8))
 
     # Calculate statistics by matrix type
-    matrix_stats = df.groupby('matrix_type')['beta_avg'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
+    matrix_stats = df.groupby('matrix_type')['|C-C_ref|/(|A||B|)_avg'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
     matrix_stats = matrix_stats.sort_values('mean')
 
     # Create bar plot
@@ -379,7 +379,7 @@ def create_error_scaling_plots(df, output_dir):
     ax = axes[0, 0]
     for kernel in kernels:
         kernel_data = df[df['kernel_type'] == kernel]
-        size_avg = kernel_data.groupby('matrix_size')['beta_avg'].mean()
+        size_avg = kernel_data.groupby('matrix_size')['|C-C_ref|/(|A||B|)_avg'].mean()
         ax.loglog(size_avg.index, size_avg.values, 'o-', label=kernel, linewidth=2, markersize=6)
 
     ax.set_xlabel('Matrix Size')
@@ -393,7 +393,7 @@ def create_error_scaling_plots(df, output_dir):
     colors = plt.cm.Set1(np.linspace(0, 1, len(matrix_types)))
     for i, matrix_type in enumerate(matrix_types):
         matrix_data = df[df['matrix_type'] == matrix_type]
-        size_avg = matrix_data.groupby('matrix_size')['beta_avg'].mean()
+        size_avg = matrix_data.groupby('matrix_size')['|C-C_ref|/(|A||B|)_avg'].mean()
         ax.loglog(size_avg.index, size_avg.values, 'o-', label=matrix_type,
                  color=colors[i], linewidth=2, markersize=6)
 
@@ -408,7 +408,7 @@ def create_error_scaling_plots(df, output_dir):
     for kernel in kernels:
         kernel_data = df[df['kernel_type'] == kernel]
         sizes = kernel_data['matrix_size'].values
-        errors = kernel_data['beta_avg'].values
+        errors = kernel_data['|C-C_ref|/(|A||B|)_avg'].values
         ax.loglog(sizes, errors, 'o', alpha=0.6, label=kernel)
 
     ax.set_xlabel('Matrix Size')
@@ -426,7 +426,7 @@ def create_error_scaling_plots(df, output_dir):
             if len(subset) >= 2:
                 subset_sorted = subset.sort_values('matrix_size')
                 sizes = subset_sorted['matrix_size'].values
-                errors = subset_sorted['beta_avg'].values
+                errors = subset_sorted['|C-C_ref|/(|A||B|)_avg'].values
 
                 # Calculate growth rate (slope in log-log plot)
                 if len(sizes) >= 2 and all(e > 0 for e in errors) and all(s > 0 for s in sizes):
@@ -468,7 +468,7 @@ def create_configuration_heatmap(df, output_dir):
         size_data = df[df['matrix_size'] == size]
 
         # Create pivot table for heatmap
-        heatmap_data = size_data.pivot_table(values='beta_avg',
+        heatmap_data = size_data.pivot_table(values='|C-C_ref|/(|A||B|)_avg',
                                             index='kernel_type',
                                             columns='matrix_type',
                                             aggfunc='mean')
@@ -492,7 +492,7 @@ def create_error_distribution_plots(df, output_dir):
 
     # Plot 1: Overall error distribution
     ax = axes[0, 0]
-    ax.hist(np.log10(df['beta_avg']), bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+    ax.hist(np.log10(df['|C-C_ref|/(|A||B|)_avg']), bins=30, alpha=0.7, color='skyblue', edgecolor='black')
     ax.set_xlabel('log₁₀(Normalized Error)')
     ax.set_ylabel('Frequency')
     ax.set_title('Overall Error Distribution')
@@ -502,7 +502,7 @@ def create_error_distribution_plots(df, output_dir):
     ax = axes[0, 1]
     kernels = df['kernel_type'].unique()
     for kernel in kernels:
-        kernel_errors = df[df['kernel_type'] == kernel]['beta_avg']
+        kernel_errors = df[df['kernel_type'] == kernel]['|C-C_ref|/(|A||B|)_avg']
         ax.hist(np.log10(kernel_errors), bins=20, alpha=0.6, label=kernel)
     ax.set_xlabel('log₁₀(Normalized Error)')
     ax.set_ylabel('Frequency')
@@ -512,7 +512,7 @@ def create_error_distribution_plots(df, output_dir):
 
     # Plot 3: Box plot by kernel
     ax = axes[1, 0]
-    kernel_data = [df[df['kernel_type'] == kernel]['beta_avg'].values for kernel in kernels]
+    kernel_data = [df[df['kernel_type'] == kernel]['|C-C_ref|/(|A||B|)_avg'].values for kernel in kernels]
     box_plot = ax.boxplot(kernel_data, labels=kernels, patch_artist=True)
     for patch, color in zip(box_plot['boxes'], ['lightblue', 'lightgreen', 'lightcoral']):
         patch.set_facecolor(color)
@@ -524,7 +524,7 @@ def create_error_distribution_plots(df, output_dir):
     # Plot 4: Box plot by matrix type
     ax = axes[1, 1]
     matrix_types = df['matrix_type'].unique()
-    matrix_data = [df[df['matrix_type'] == mt]['beta_avg'].values for mt in matrix_types]
+    matrix_data = [df[df['matrix_type'] == mt]['|C-C_ref|/(|A||B|)_avg'].values for mt in matrix_types]
     ax.boxplot(matrix_data, labels=matrix_types)
     ax.set_yscale('log')
     ax.set_ylabel('Normalized Error')
@@ -544,7 +544,7 @@ def create_statistical_comparison_plots(df, output_dir):
 
     # Plot 1: Violin plot by kernel
     ax = axes[0, 0]
-    sns.violinplot(data=df, x='kernel_type', y='beta_avg', ax=ax)
+    sns.violinplot(data=df, x='kernel_type', y='|C-C_ref|/(|A||B|)_avg', ax=ax)
     ax.set_yscale('log')
     ax.set_ylabel('Normalized Error')
     ax.set_title('Error Distribution Shape by Kernel')
@@ -552,7 +552,7 @@ def create_statistical_comparison_plots(df, output_dir):
 
     # Plot 2: Strip plot showing all points
     ax = axes[0, 1]
-    sns.stripplot(data=df, x='kernel_type', y='beta_avg', ax=ax, size=8, alpha=0.7)
+    sns.stripplot(data=df, x='kernel_type', y='|C-C_ref|/(|A||B|)_avg', ax=ax, size=8, alpha=0.7)
     ax.set_yscale('log')
     ax.set_ylabel('Normalized Error')
     ax.set_title('All Data Points by Kernel')
@@ -566,7 +566,7 @@ def create_statistical_comparison_plots(df, output_dir):
         means = []
         stds = []
         for size in sizes:
-            size_data = kernel_data[kernel_data['matrix_size'] == size]['beta_avg']
+            size_data = kernel_data[kernel_data['matrix_size'] == size]['|C-C_ref|/(|A||B|)_avg']
             means.append(size_data.mean())
             stds.append(size_data.std())
 
@@ -588,7 +588,7 @@ def create_statistical_comparison_plots(df, output_dir):
     numeric_df['kernel_num'] = pd.Categorical(df['kernel_type']).codes
     numeric_df['matrix_num'] = pd.Categorical(df['matrix_type']).codes
 
-    corr_data = numeric_df[['matrix_size', 'kernel_num', 'matrix_num', 'beta_avg', 'E_{AB}/beta']].corr()
+    corr_data = numeric_df[['matrix_size', 'kernel_num', 'matrix_num', '|C-C_ref|/(|A||B|)_avg', 'E_{AB}/beta']].corr()
     sns.heatmap(corr_data, annot=True, cmap='coolwarm', center=0, ax=ax)
     ax.set_title('Feature Correlation Matrix')
 

@@ -1,24 +1,22 @@
 // main.cu
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <cuda_runtime.h>
 #include <cuda_profiler_api.h>
-#include <cstring>
-
-#include "../include/utils.cuh"
-#include "../include/gemms.cuh"
 #include "../include/benchmark.h"
 #include "../include/error_analysis.cuh"
+#include "../include/utils.cuh"
 #include "../include/config.h"
 
-// Simple mode enumeration
 typedef enum {
     MODE_NONE = 0,
     MODE_PERFORMANCE,
     MODE_ERROR_ANALYSIS,
     MODE_ULP_ANALYSIS,
     MODE_COMPLETE_ANALYSIS,
-    MODE_ALL_BENCHMARKS
+    MODE_ALL_BENCHMARKS,
+    MODE_ASSESS_RESOURCES
 } RunMode;
 
 void printUsage() {
@@ -29,12 +27,13 @@ void printUsage() {
     printf("  --error-analysis      Run error analysis for specific kernel/size\n");
     printf("  --ulp-analysis        Run ULP analysis for specific kernel/size\n");
     printf("  --complete            Run both error analysis AND performance test for kernel/size\n");
+    printf("  --assess-resources    Assess kernel resource usage for specific kernel/size\n");
     printf("\nOptions:\n");
-    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --complete)\n");
-    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --complete)\n");
+    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources)\n");
+    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources)\n");
     printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
     printf("  --help                Show this help\n");
-    printf("\nAvailable kernels: naive, tiled, tiled_pairwise, tiled_rect, cublas, cublas_tensor, cutlass\n");
+    printf("\nAvailable kernels: naive, tiled, tiled_pairwise, tiled_rect, cublas, cublas_tensor, cutlass, cutlass_splitk_flat, cutlass_splitk_pairwise\n");
     printf("Available matrix types: wellcond, illcond, zeromean, uniform_positive, 2powers, rademacher, sanity, lognormal, file\n");
     printf("Available sizes for --all: ");
     for (int i = 0; i < NUM_SIZES; i++) {
@@ -48,6 +47,7 @@ void printUsage() {
     printf("  ./main --error-analysis --test=tiled_pairwise --size=512 --matrix-type=illcond\n");
     printf("  ./main --ulp-analysis --test=tiled --size=512 --matrix-type=wellcond\n");
     printf("  ./main --complete --test=tiled_pairwise --size=1024 --matrix-type=normal\n");
+    printf("  ./main --assess-resources --test=cutlass_splitk_flat --size=1024\n");
     printf("  ./main --complete --test=tiled_pairwise --size=1024\n");
 }
 
@@ -88,6 +88,8 @@ int main(int argc, char **argv) {
             mode = MODE_ERROR_ANALYSIS;
         } else if (strcmp(argv[i], "--ulp-analysis") == 0) {
             mode = MODE_ULP_ANALYSIS;
+        } else if (strcmp(argv[i], "--assess-resources") == 0) {
+            mode = MODE_ASSESS_RESOURCES;
         } else if (strcmp(argv[i], "--complete") == 0) {
             mode = MODE_COMPLETE_ANALYSIS;
         } else if (strncmp(argv[i], "--test=", 7) == 0) {
@@ -112,19 +114,19 @@ int main(int argc, char **argv) {
 
     // Validate arguments
     if (mode == MODE_NONE) {
-        printf("Error: Must specify a mode (--all, --performance, --error-analysis, --ulp-analysis, or --complete)\n");
+        printf("Error: Must specify a mode (--all, --performance, --error-analysis, --ulp-analysis, --complete, or --assess-resources)\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS) && strlen(test_name) == 0) {
-        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, and complete modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES) && strlen(test_name) == 0) {
+        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, complete, and assess-resources modes\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS) && matrix_size <= 0) {
-        printf("Error: --size=N is required for performance, error analysis, ULP analysis, and complete modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES) && matrix_size <= 0) {
+        printf("Error: --size=N is required for performance, error analysis, ULP analysis, complete, and assess-resources modes\n");
         printUsage();
         return 1;
     }
@@ -201,6 +203,19 @@ int main(int argc, char **argv) {
             runSingleBenchmark(test_name, matrix_size);
 
             printf("\n=== Complete Analysis Finished ===\n");
+            break;
+        }
+
+        case MODE_ASSESS_RESOURCES: {
+            printf("\nRunning kernel resource assessment: %s at size %d\n", test_name, matrix_size);
+
+            KernelType kernel_type = getKernelTypeFromName(test_name);
+            if (kernel_type == (KernelType)-1) {
+                printf("Error: Test '%s' not found\n", test_name);
+                return 1;
+            }
+
+            assess_kernel_resources(kernel_type, matrix_size);
             break;
         }
 

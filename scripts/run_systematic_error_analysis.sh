@@ -16,9 +16,11 @@ echo ""
 mkdir -p data
 
 # Define test parameters
-KERNELS=("tiled" "tiled_pairwise" "cublas")
-MATRIX_TYPES=("uniform_positive" "wellcond" "illcond" "zeromean" "2powers")
-SIZES=(256 512 1024 2048)
+KERNELS=("tiled" "tiled_pairwise" "cublas" "cutlass_splitk_flat" "cutlass_splitk_pairwise")
+#MATRIX_TYPES=("uniform_positive" "wellcond" "illcond" "zeromean" "2powers")
+MATRIX_TYPES=("uniform_positive")
+SIZES=(256 384 512 1024 1536 2048 3072)
+#SIZES=(256 384 512 768 1024 1280 1536 1792 2048 3072 4096)
 
 # Counter for progress tracking
 total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))

@@ -12,6 +12,9 @@ void printDevicePerformanceInfo();
 void printCacheInfo();
 void check_occupancy();
 
+// Kernel resource assessment
+void assess_kernel_resources(KernelType kernel_type, int n);
+
 // Statistics computation for arrays
 typedef struct {
     double average;

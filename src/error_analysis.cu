@@ -9,8 +9,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
-#include <algorithm>  // for std::max
+#include <algorithm>  // for std::max and std::sort
 #include <string>     // for std::to_string
+#include <vector>     // for std::vector
 
 // Device function for atomic add with double precision
 __device__ double atomicAddDouble(double* address, double val) {
@@ -22,6 +23,57 @@ __device__ double atomicAddDouble(double* address, double val) {
                         __double_as_longlong(val + __longlong_as_double(assumed)));
     } while (assumed != old);
     return __longlong_as_double(old);
+}
+
+// Helper function to generate reproducible seed arrays
+void generate_seed_array(unsigned long long* seeds, int num_samples, unsigned long long base_seed = 0) {
+    if (base_seed == 0) {
+        // Use time-based seed for truly random behavior
+        base_seed = (unsigned long long)time(NULL);
+        printf("Using time-based random seed: %llu\n", base_seed);
+    } else {
+        printf("Using reproducible base seed: %llu\n", base_seed);
+    }
+
+    // Generate deterministic but well-distributed seeds
+    for (int i = 0; i < num_samples; i++) {
+        seeds[i] = base_seed ^ (0x9E3779B97F4A7C15ull + (unsigned long long)i * 0xBF58476D1CE4E5B9ull);
+    }
+}
+
+// Helper function to generate a specific matrix pair from a reproducible sequence
+void generate_matrix_pair_from_sequence(float* d_A, float* d_B, int n, MatrixType matrix_type,
+                                       unsigned long long base_seed, int sample_index) {
+    // Generate the same seed that would be used for this sample in the sequence
+    unsigned long long seedA = base_seed ^ (0x9E3779B97F4A7C15ull + (unsigned long long)sample_index * 0xBF58476D1CE4E5B9ull);
+    unsigned long long seedB = seedA ^ 0x94D049BB133111EBull;
+
+    printf("Generating matrix pair from sequence: base_seed=%llu, sample_index=%d\n", base_seed, sample_index);
+    printf("  seedA=%llu, seedB=%llu\n", seedA, seedB);
+
+    generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
+    generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
+}
+
+// Function to find the sample index closest to median error from analysis results
+// This requires that you've run analysis with reproducible seeds and saved per-sample results
+int find_median_sample_index(const float* error_values, int num_samples) {
+    // Create a copy of error values with indices for sorting
+    std::vector<std::pair<float, int>> indexed_errors;
+    for (int i = 0; i < num_samples; i++) {
+        indexed_errors.push_back({error_values[i], i});
+    }
+
+    // Sort by error value
+    std::sort(indexed_errors.begin(), indexed_errors.end());
+
+    // Find median
+    int median_index = num_samples / 2;
+    int closest_sample_index = indexed_errors[median_index].second;
+    float median_error = indexed_errors[median_index].first;
+
+    printf("Median error: %.6e, found at sample index: %d\n", median_error, closest_sample_index);
+    return closest_sample_index;
 }
 
 // GPU kernels for device-only error computation
@@ -109,42 +161,111 @@ inline double gamma(int n, double u) {
     return nu / (1.0 - nu);
 }
 
-inline int ceil_log2_int(int x) {
-    int p = 0, v = x - 1;
-    while (v > 0) { v >>= 1; ++p; }
-    return p;
+// inline int ceil_log2_int(int x) {
+//     int p = 0, v = x - 1;
+//     while (v > 0) { v >>= 1; ++p; }
+//     return p;
+// }
+
+__host__ __device__ inline int ceil_log2_int(int x) {
+    return (x <= 1) ? 0 : 32 - __builtin_clz(x - 1);
 }
 
+__host__ __device__ inline int ceil_div(int a, int b) { return (a + b - 1) / b; }
+
 // Compute theoretical error bound factor based on kernel type and matrix size
-float compute_beta_factor(KernelType kernel_type, bool single_pass, int n) {
+float compute_beta_factor(KernelType kernel_type, int K) {
     const double u = unit_roundoff_fp32(); // Use precision from config
 
-    if (single_pass) {
-        // For naive kernels: single-pass accumulation over n elements
-        return (float)gamma(n, u);
+    // Defaults to avoid UB
+    int  L            = 1;      // inter count (tiles or slices)
+    int  tile_inner_k = 1;      // intra depth (K inside a tile/slice)
+    bool pairwise     = false;
+
+    switch (kernel_type) {
+        case KERNEL_TILED: {                    // your own tiled kernel, FLAT across tiles
+            L            = ceil_div(K, TILE_SIZE);
+            tile_inner_k = TILE_SIZE;
+            pairwise     = false;
+            break;
+        }
+        case KERNEL_TILED_PAIRWISE: {           // your tiled, PAIRWISE across tiles
+            L            = ceil_div(K, TILE_SIZE);
+            tile_inner_k = TILE_SIZE;
+            pairwise     = true;
+            break;
+        }
+        case KERNEL_CUTLASS_SPLITK_FLAT: {      // split-K, FLAT across S slices
+            const int S  = SPLIT_K_SLICES;
+            L            = S;
+            tile_inner_k = ceil_div(K, S);      // per-slice depth
+            pairwise     = false;
+            break;
+        }
+        case KERNEL_CUTLASS_SPLITK_PAIRWISE: {  // split-K, PAIRWISE across S slices
+            const int S  = SPLIT_K_SLICES;
+            L            = S;
+            tile_inner_k = ceil_div(K, S);
+            pairwise     = true;
+            break;
+        }
+        case KERNEL_CUBLAS: {                   // model cuBLAS as flat across tiles
+            // If you prefer, define CUBLAS_TILE_K separately; else reuse TILE_SIZE.
+            const int TILE_K_BLAS = TILE_SIZE;
+            L            = ceil_div(K, TILE_K_BLAS);
+            tile_inner_k = TILE_K_BLAS;
+            pairwise     = false;
+            break;
+        }
+        default: {
+            // Fallback: behave like a flat tiled kernel
+            L            = ceil_div(K, TILE_SIZE);
+            tile_inner_k = TILE_SIZE;
+            pairwise     = false;
+            break;
+        }
     }
 
-    // For tiled kernels: two-stage accumulation
-    int num_tiles = (n + TILE_SIZE - 1) / TILE_SIZE;
-    int tile_inner_k = TILE_SIZE; // Inner loop accumulation size
+    // Stage 1: within tile/slice (always present, even for flat)
+    const double beta_inner = gamma(tile_inner_k, u);
 
-    // Stage 1: Accumulation within each tile (size TILE_SIZE)
-    double beta_inner = gamma(tile_inner_k, u);
+    // Stage 2: across tiles/slices
+    const int outer_eff     = pairwise ? ceil_log2_int(L) : L;
+    const double beta_outer = gamma(outer_eff, u);
 
-    // Stage 2: Accumulation across tiles
-    bool pairwise = (kernel_type == KERNEL_TILED_PAIRWISE);
-    double beta_outer;
-
-    if (pairwise) {
-        // Pairwise summation has logarithmic error growth
-        beta_outer = gamma(ceil_log2_int(num_tiles), u);
-    } else {
-        // Standard summation has linear error growth
-        beta_outer = gamma(num_tiles, u);
-    }
-
-    // Total error bound: inner + outer (conservative, cross-terms are O(u^2))
+    // First-order composition (cross-terms are O(u^2))
     return (float)(beta_inner + beta_outer);
+
+    // int L, tile_inner_k;
+    // bool pairwise = false;
+    // // For tiled kernels: two-stage accumulation
+    // switch (kernel_type) {
+    //     case KERNEL_TILED_PAIRWISE:
+    //         L = (n + TILE_SIZE - 1) / TILE_SIZE;
+    //         tile_inner_k = TILE_SIZE; // Inner loop accumulation size
+    //         pairwise = true;
+    //     case KERNEL_CUTLASS_SPLITK_PAIRWISE:
+    //         L = SPLIT_K_SLICES;
+    //         tile_inner_k = n/SPLIT_K_SLICES; // Inner loop accumulation size
+    //         pairwise = true;
+    // }
+
+    // // Stage 1: Accumulation within each tile (size TILE_SIZE)
+    // double beta_inner = gamma(tile_inner_k, u);
+
+    // // Stage 2: Accumulation across tiles
+    // double beta_outer;
+
+    // if (pairwise) {
+    //     // Pairwise summation has logarithmic error growth
+    //     beta_outer = gamma(ceil_log2_int(L), u);
+    // } else {
+    //     // Standard summation has linear error growth
+    //     beta_outer = gamma(L, u);
+    // }
+
+    // // Total error bound: inner + outer (conservative, cross-terms are O(u^2))
+    // return (float)(beta_inner + beta_outer);
 }
 
 // Integer ULP distance between two FP32 values.
@@ -321,7 +442,7 @@ static inline unsigned long long sum_bins(const unsigned long long B[NUM_BINS]){
     unsigned long long s=0; for (int i=0;i<NUM_BINS;++i) s+=B[i]; return s;
 }
 
-void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
+void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible) {
     printf("\n=== ULP Analysis ===\n");
     printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
            (int)matrix_type, (int)kernel_type, n, n, num_samples);
@@ -372,16 +493,25 @@ void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, in
 
     printf("Running %d samples...\n", num_samples);
 
+    // Generate seed array for reproducibility
+    unsigned long long* seeds = new unsigned long long[num_samples];
+    if (reproducible) {
+        generate_seed_array(seeds, num_samples, ERROR_SEED);
+    } else {
+        // For non-reproducible mode, use time-based base seed
+        unsigned long long time_seed = (unsigned long long)time(NULL);
+        generate_seed_array(seeds, num_samples, time_seed);
+    }
+
     // For each matrix sample s
-    unsigned long long base_seed = (unsigned long long)time(NULL);
     for (int s = 0; s < num_samples; ++s) {
         if (s % 10 == 0 && s > 0) {
             printf("Completed %d/%d samples...\n", s, num_samples);
         }
 
         // Generate new matrices for this sample using the specified matrix type
-        // Use different seeds for each sample to ensure truly random matrices
-        auto seedA = base_seed ^ (0x9E3779B97F4A7C15ull + (unsigned long long)s*0xBF58476D1CE4E5B9ull);
+        // Use different seeds for each sample from our reproducible array
+        auto seedA = seeds[s];
         auto seedB = seedA ^ 0x94D049BB133111EBull;
 
         generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
@@ -470,23 +600,29 @@ void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, in
     cudaFree(dSum);
     cudaFree(dSumSq);
     cublasDestroy(cublas_handle);
+
+    // Cleanup seed array
+    delete[] seeds;
 }
+
+// Given measured E/u and E/beta, compute "effective depth"
+inline double effective_depth(double E_over_u, double E_over_beta) {
+  return E_over_u / std::max(E_over_beta, 1e-300); // ~ beta/u
+}
+
 
 // Efficient multi-sample testing for specific matrix type and kernel
 // Uses consistent kernel configurations for fair error analysis:
 // - Test kernel: Uses kernel-specific optimized configuration
 // - Reference: Uses standard 2D tiled configuration (kernel-independent)
 // - Helper kernels: Use standard 1D configurations (efficient for element-wise ops)
-void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix) {
+void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible) {
     printf("\n=== Multi-Sample Analysis ===\n");
     printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
            (int)matrix_type, (int)kernel_type, n, n, num_samples);
 
     // Compute theoretical error bound factor
-    // Use single_pass=false for tiled_pairwise kernel, single_pass=true for the rest
-    bool single_pass = true;
-    if (kernel_type == KERNEL_TILED_PAIRWISE) single_pass=false;
-    float beta_factor = compute_beta_factor(kernel_type, single_pass, n);
+    float beta_factor = compute_beta_factor(kernel_type, n);
     // Allocate device memory (reused across all samples)
     size_t size = n * n * sizeof(float);
     float *d_A, *d_B, *d_C_kernel;
@@ -534,16 +670,25 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     printf("Running %d samples...\n", num_samples);
 
+    // Generate seed array for reproducibility
+    unsigned long long* seeds = new unsigned long long[num_samples];
+    if (reproducible) {
+        generate_seed_array(seeds, num_samples, ERROR_SEED);
+    } else {
+        // For non-reproducible mode, use time-based base seed
+        unsigned long long time_seed = (unsigned long long)time(NULL);
+        generate_seed_array(seeds, num_samples, time_seed);
+    }
+
     // Run multiple samples
-    unsigned long long base_seed = (unsigned long long)time(NULL);
     for (int sample = 0; sample < num_samples; sample++) {
         if (sample % 10 == 0 && sample > 0) {
             printf("Completed %d/%d samples...\n", sample, num_samples);
         }
 
         // Generate new matrices for this sample using the specified matrix type
-        // Use different seeds for each sample to ensure truly random matrices
-        auto seedA = base_seed ^ (0x9E3779B97F4A7C15ull + (unsigned long long)sample*0xBF58476D1CE4E5B9ull);
+        // Use different seeds for each sample from our reproducible array
+        auto seedA = seeds[sample];
         auto seedB = seedA ^ 0x94D049BB133111EBull;
         generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
         generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
@@ -622,8 +767,8 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     if (fp) {
         // Write header with all metadata and statistics
         fprintf(fp, "matrix_type,kernel_type,matrix_size,num_samples,");
-        fprintf(fp, "frob_avg,frob_std,frob_p95,frob_max,");
-        fprintf(fp, "beta_avg,beta_std,beta_p95,beta_max,");
+        fprintf(fp, "|C-C_ref|_avg,|C-C_ref|_std,|C-C_ref|_p95,|C-C_ref|_max,");
+        fprintf(fp, "|C-C_ref|/(|A||B|)_avg,|C-C_ref|/(|A||B|)_std,|C-C_ref|/(|A||B|)_p95,|C-C_ref|/(|A||B|)_max,");
         fprintf(fp, "theoretical_beta,u32,E_{AB}/beta,E_{AB}/u\n");
 
         // Write single row with all the summary data
@@ -653,4 +798,7 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     // Cleanup host memory (much less now!)
     free(frobenius_errors); free(frobenius_M_error); free(normalized_errors);
+
+    // Cleanup seed array
+    delete[] seeds;
 }

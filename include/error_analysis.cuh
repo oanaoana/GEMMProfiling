@@ -19,7 +19,14 @@ static const uint32_t BIN_REP_UPPER[NUM_BINS] = {0,1,2,4,8,16,32,64, UINT32_MAX}
 float compute_beta_factor(KernelType kernel_type, bool single_pass, int n);
 
 // Efficient multi-sample testing for specific matrix type and kernel
-void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix);
+void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible = ERROR_REPRODUCIBLE);
 
 // ULP-based analysis for specific matrix type and kernel
-void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix);
+void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible = ERROR_REPRODUCIBLE);
+
+// Helper function to generate a specific matrix pair from a reproducible sequence
+void generate_matrix_pair_from_sequence(float* d_A, float* d_B, int n, MatrixType matrix_type,
+                                       unsigned long long base_seed, int sample_index);
+
+// Function to find the sample index closest to median error from analysis results
+int find_median_sample_index(const float* error_values, int num_samples);

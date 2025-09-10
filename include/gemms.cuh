@@ -29,6 +29,8 @@ void launch_cublas_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks
 // CUTLASS wrappers
 void launch_cutlass(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_cutlass_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+void launch_cutlass_splitk_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 
 // Original cuBLAS wrapper that takes handle
 void launch_cublas_handle(cublasHandle_t handle, float* d_A, float* d_B, float* d_C, int n);

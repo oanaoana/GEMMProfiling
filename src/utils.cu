@@ -242,6 +242,172 @@ void printCacheInfo() {
     printf("=====================================\n\n");
 }
 
+// Kernel resource assessment function
+void assess_kernel_resources(KernelType kernel_type, int n) {
+    printf("\n=== Kernel Resource Assessment ===\n");
+    printf("Kernel: %s, Matrix Size: %dx%d\n", kernelTypeToString(kernel_type), n, n);
+
+    cudaFuncAttributes attr = {0}; // Initialize to zero
+    cudaError_t err = cudaErrorInvalidDeviceFunction; // Default to error state
+
+    // Note: For CUTLASS kernels, we can't easily get function pointers since they're template-generated
+    // This function will focus on the kernels we can assess directly
+    switch(kernel_type) {
+        case KERNEL_NAIVE:
+            err = cudaFuncGetAttributes(&attr, matmul_naive);
+            if (err != cudaSuccess) {
+                printf("  Error getting naive kernel attributes: %s\n", cudaGetErrorString(err));
+            }
+            break;
+
+        case KERNEL_TILED:
+            err = cudaFuncGetAttributes(&attr, matmul_tiled);
+            if (err != cudaSuccess) {
+                printf("  Error getting tiled kernel attributes: %s\n", cudaGetErrorString(err));
+            }
+            break;
+
+        case KERNEL_TILED_OPT:
+            err = cudaFuncGetAttributes(&attr, matmul_tiled_opt);
+            if (err != cudaSuccess) {
+                printf("  Error getting tiled optimized kernel attributes: %s\n", cudaGetErrorString(err));
+            }
+            break;
+
+        case KERNEL_TILED_PAIRWISE:
+            err = cudaFuncGetAttributes(&attr, matmul_tiled_pairwise);
+            if (err != cudaSuccess) {
+                printf("  Error getting tiled pairwise kernel attributes: %s\n", cudaGetErrorString(err));
+            }
+            break;
+
+        case KERNEL_TILED_RECT:
+            err = cudaFuncGetAttributes(&attr, matmul_tiled_rectangular);
+            if (err != cudaSuccess) {
+                printf("  Error getting tiled rectangular kernel attributes: %s\n", cudaGetErrorString(err));
+            }
+            break;
+
+        case KERNEL_CUTLASS_SPLITK_FLAT:
+            printf("  Note: CUTLASS Split-K Flat uses template-generated kernels\n");
+            printf("  Resource usage depends on CUTLASS template instantiation\n");
+            printf("  Cannot retrieve detailed attributes for template kernels\n");
+            break;
+
+        case KERNEL_CUTLASS_SPLITK_PAIRWISE:
+            printf("  Note: CUTLASS Split-K Pairwise uses template-generated kernels\n");
+            printf("  Resource usage depends on CUTLASS template instantiation\n");
+            printf("  Cannot retrieve detailed attributes for template kernels\n");
+            break;
+
+        case KERNEL_CUBLAS:
+        case KERNEL_CUBLAS_TENSOR:
+            printf("  Note: cuBLAS kernels are proprietary and cannot be assessed\n");
+            break;
+
+        case KERNEL_CUTLASS:
+        case KERNEL_CUTLASS_TENSOR:
+            printf("  Note: CUTLASS kernels use template-generated code\n");
+            printf("  Resource usage depends on CUTLASS template instantiation\n");
+            printf("  Cannot retrieve detailed attributes for template kernels\n");
+            break;
+
+        default:
+            printf("  Unknown kernel type\n");
+            break;
+    }
+
+    // Only show kernel attributes if we successfully retrieved them
+    if (err == cudaSuccess) {
+        printf("  Kernel Resource Details:\n");
+        printf("    Registers per thread: %d\n", attr.numRegs);
+        printf("    Shared memory per block: %zu bytes\n", attr.sharedSizeBytes);
+        printf("    Max threads per block: %d\n", attr.maxThreadsPerBlock);
+        printf("    Constant memory: %zu bytes\n", attr.constSizeBytes);
+        printf("    Local memory per thread: %zu bytes\n", attr.localSizeBytes);
+    }
+
+    // Calculate theoretical occupancy for this kernel
+    dim3 threadsPerBlock, numBlocks;
+    compute_kernel_dimensions_dispatch(kernel_type, n, &threadsPerBlock, &numBlocks);
+
+    printf("  Launch configuration:\n");
+    printf("    Threads per block: %d x %d = %d\n",
+           threadsPerBlock.x, threadsPerBlock.y, threadsPerBlock.x * threadsPerBlock.y);
+    printf("    Grid size: %d x %d = %d blocks\n",
+           numBlocks.x, numBlocks.y, numBlocks.x * numBlocks.y);
+    printf("    Total threads: %d\n",
+           (numBlocks.x * numBlocks.y) * (threadsPerBlock.x * threadsPerBlock.y));
+
+    // Calculate and report occupancy for native CUDA kernels
+    if (err == cudaSuccess) {
+        int device;
+        cudaGetDevice(&device);
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, device);
+
+        int maxActiveBlocks = 0;
+        int threadsPerBlockTotal = threadsPerBlock.x * threadsPerBlock.y;
+        size_t sharedMemPerBlock = attr.sharedSizeBytes;
+
+        // Calculate occupancy based on the specific kernel
+        void* kernel_ptr = nullptr;
+        switch(kernel_type) {
+            case KERNEL_NAIVE:
+                kernel_ptr = (void*)matmul_naive;
+                break;
+            case KERNEL_TILED:
+                kernel_ptr = (void*)matmul_tiled;
+                break;
+            case KERNEL_TILED_OPT:
+                kernel_ptr = (void*)matmul_tiled_opt;
+                break;
+            case KERNEL_TILED_PAIRWISE:
+                kernel_ptr = (void*)matmul_tiled_pairwise;
+                break;
+            case KERNEL_TILED_RECT:
+                kernel_ptr = (void*)matmul_tiled_rectangular;
+                break;
+            default:
+                kernel_ptr = nullptr;
+                break;
+        }
+
+        if (kernel_ptr != nullptr) {
+            cudaError_t occ_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                &maxActiveBlocks, kernel_ptr, threadsPerBlockTotal, sharedMemPerBlock);
+
+            if (occ_err == cudaSuccess) {
+                int activeThreadsPerSM = maxActiveBlocks * threadsPerBlockTotal;
+                double occupancy_percent = (activeThreadsPerSM * 100.0) / prop.maxThreadsPerMultiProcessor;
+
+                printf("  Occupancy Analysis:\n");
+                printf("    Max threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
+                printf("    Max blocks per SM: %d\n", prop.maxBlocksPerMultiProcessor);
+                printf("    Active blocks per SM: %d\n", maxActiveBlocks);
+                printf("    Active threads per SM: %d\n", activeThreadsPerSM);
+                printf("    Theoretical occupancy: %.1f%%\n", occupancy_percent);
+                
+                // Calculate limiting factors
+                int max_blocks_by_threads = prop.maxThreadsPerMultiProcessor / threadsPerBlockTotal;
+                int max_blocks_by_sm_limit = prop.maxBlocksPerMultiProcessor;
+                
+                printf("    Limiting factors:\n");
+                printf("      Max blocks by thread limit: %d\n", max_blocks_by_threads);
+                printf("      Max blocks by SM limit: %d\n", max_blocks_by_sm_limit);
+                if (sharedMemPerBlock > 0) {
+                    int max_blocks_by_shared_mem = prop.sharedMemPerMultiprocessor / sharedMemPerBlock;
+                    printf("      Max blocks by shared memory: %d\n", max_blocks_by_shared_mem);
+                }
+            } else {
+                printf("  Occupancy Analysis: Error calculating occupancy: %s\n", cudaGetErrorString(occ_err));
+            }
+        }
+    }
+
+    printf("===================================\n\n");
+}
+
 // Comparison function for qsort (for percentile calculation)
 static int compare_doubles(const void *a, const void *b) {
     double arg1 = *(const double*)a;
@@ -313,6 +479,8 @@ KernelType getKernelTypeFromName(const char* name) {
     if (strcmp(name, "cublas_tensor") == 0) return KERNEL_CUBLAS_TENSOR;
     if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
     if (strcmp(name, "cutlass_tensor") == 0) return KERNEL_CUTLASS_TENSOR;
+    if (strcmp(name, "cutlass_splitk_flat") == 0) return KERNEL_CUTLASS_SPLITK_FLAT;
+    if (strcmp(name, "cutlass_splitk_pairwise") == 0) return KERNEL_CUTLASS_SPLITK_PAIRWISE;
     return static_cast<KernelType>(-1); // Return invalid value for unknown names
 }
 
@@ -342,6 +510,8 @@ const char* kernelTypeToString(KernelType kernel_type) {
         case KERNEL_CUBLAS_TENSOR: return "cublas_tensor";
         case KERNEL_CUTLASS: return "cutlass";
         case KERNEL_CUTLASS_TENSOR: return "cutlass_tensor";
+        case KERNEL_CUTLASS_SPLITK_FLAT: return "cutlass_splitk_flat";
+        case KERNEL_CUTLASS_SPLITK_PAIRWISE: return "cutlass_splitk_pairwise";
         default: return "unknown";
     }
 }
@@ -372,8 +542,10 @@ static KernelFunc kernel_function_table[] = {
     launch_tiled_rect,      // KERNEL_TILED_RECT
     launch_cublas,          // KERNEL_CUBLAS
     launch_cublas_tensor,   // KERNEL_CUBLAS_TENSOR
-    launch_cutlass,         // KERNEL_CUTLASS
-    launch_cutlass_tensor   // KERNEL_CUTLASS_TENSOR
+    launch_cutlass,               // KERNEL_CUTLASS
+    launch_cutlass_tensor,        // KERNEL_CUTLASS_TENSOR
+    launch_cutlass_splitk_flat,   // KERNEL_CUTLASS_SPLITK_FLAT
+    launch_cutlass_splitk_pairwise // KERNEL_CUTLASS_SPLITK_PAIRWISE
 };
 
 void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {

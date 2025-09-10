@@ -15,15 +15,18 @@ import glob
 import pandas as pd
 import os
 
+# Configure data folder here
+DATA_FOLDER = "data/data_prelim"  # Change this to "data" for current data
+
 def load_data():
     """Load all CSV files and return combined dataframe."""
-    csv_files = glob.glob("data/error_analysis_*_*_summary_n*.csv")
+    csv_files = glob.glob(f"{DATA_FOLDER}/error_analysis_*_*_summary_n*.csv")
 
     if not csv_files:
-        print("No CSV files found!")
+        print(f"No CSV files found in {DATA_FOLDER}/!")
         return pd.DataFrame()
 
-    print(f"Found {len(csv_files)} CSV files")
+    print(f"Found {len(csv_files)} CSV files in {DATA_FOLDER}/")
 
     all_data = []
     for csv_file in csv_files:
@@ -45,7 +48,7 @@ def create_summary_tables(df):
 
     # Select and rename columns for clarity
     table_df = df[['kernel_type', 'matrix_type', 'matrix_size',
-                   'frob_avg', 'beta_avg', 'theoretical_beta', 'E_{AB}/u', 'E_{AB}/beta']].copy()
+                   '|C-C_ref|_avg', '|C-C_ref|/(|A||B|)_avg', 'theoretical_beta', 'E_{AB}/u', 'E_{AB}/beta']].copy()
 
     # Rename columns for clarity
     table_df.columns = ['Kernel', 'Matrix_Type', 'Size',
@@ -63,8 +66,8 @@ def create_summary_tables(df):
     print("Creating matrix type summary...")
 
     matrix_summary = df.groupby('matrix_type').agg({
-        'frob_avg': ['mean', 'std', 'min', 'max'],
-        'beta_avg': ['mean', 'std', 'min', 'max'],
+        '|C-C_ref|_avg': ['mean', 'std', 'min', 'max'],
+        '|C-C_ref|/(|A||B|)_avg': ['mean', 'std', 'min', 'max'],
         'theoretical_beta': ['mean', 'std', 'min', 'max'],
         'E_{AB}/u': ['mean', 'std', 'min', 'max'],
         'E_{AB}/beta': ['mean', 'std', 'min', 'max']
@@ -81,8 +84,8 @@ def create_summary_tables(df):
     print("Creating kernel type summary...")
 
     kernel_summary = df.groupby('kernel_type').agg({
-        'frob_avg': ['mean', 'std', 'min', 'max'],
-        'beta_avg': ['mean', 'std', 'min', 'max'],
+        '|C-C_ref|_avg': ['mean', 'std', 'min', 'max'],
+        '|C-C_ref|/(|A||B|)_avg': ['mean', 'std', 'min', 'max'],
         'theoretical_beta': ['mean', 'std', 'min', 'max'],
         'E_{AB}/u': ['mean', 'std', 'min', 'max'],
         'E_{AB}/beta': ['mean', 'std', 'min', 'max']
@@ -109,12 +112,12 @@ def create_summary_tables(df):
     print("✓ Saved: data/summary_tables/matrix_kernel_beta_u32.csv")
 
     # Frobenius errors
-    pivot_frob = df.groupby(['matrix_type', 'kernel_type'])['frob_avg'].mean().unstack()
+    pivot_frob = df.groupby(['matrix_type', 'kernel_type'])['|C-C_ref|_avg'].mean().unstack()
     pivot_frob.to_csv("data/summary_tables/matrix_kernel_frobenius.csv")
     print("✓ Saved: data/summary_tables/matrix_kernel_frobenius.csv")
 
     # Normalized frobenius
-    pivot_norm = df.groupby(['matrix_type', 'kernel_type'])['beta_avg'].mean().unstack()
+    pivot_norm = df.groupby(['matrix_type', 'kernel_type'])['|C-C_ref|/(|A||B|)_avg'].mean().unstack()
     pivot_norm.to_csv("data/summary_tables/matrix_kernel_normalized_frobenius.csv")
     print("✓ Saved: data/summary_tables/matrix_kernel_normalized_frobenius.csv")
 
@@ -124,21 +127,22 @@ def create_summary_tables(df):
     # Create a nicely formatted table for each matrix type
     with open("data/summary_tables/formatted_summary.txt", "w") as f:
         f.write("GEMM ERROR ANALYSIS SUMMARY\n")
-        f.write("="*80 + "\n\n")
+        f.write("="*105 + "\n\n")
 
         for matrix_type in sorted(df['matrix_type'].unique()):
             f.write(f"Matrix Type: {matrix_type.upper()}\n")
-            f.write("-" * 40 + "\n")
+            f.write("-" * 55 + "\n")
 
             matrix_data = df[df['matrix_type'] == matrix_type]
 
-            f.write(f"{'Kernel':<15} {'Size':<6} {'Frobenius':<12} {'Normalized':<12} {'Theo_Beta':<12} {'E_AB/u':<12} {'E_AB/beta':<12}\n")
-            f.write("-" * 85 + "\n")
+            # Header with proper spacing
+            f.write(f"{'Kernel':<23} {'Size':<6} {'|C-C_ref|':<13} {'|C-C_ref|/|A||B|':<16} {'Theo_Beta':<13} {'E_AB/u':<12} {'E_AB/beta':<12}\n")
+            f.write("-" * 105 + "\n")
 
             for _, row in matrix_data.sort_values(['kernel_type', 'matrix_size']).iterrows():
-                f.write(f"{row['kernel_type']:<15} {int(row['matrix_size']):<6} "
-                       f"{row['frob_avg']:<12.3e} {row['beta_avg']:<12.3e} "
-                       f"{row['theoretical_beta']:<12.3e} {row['E_{AB}/u']:<12.3e} {row['E_{AB}/beta']:<12.3e}\n")
+                f.write(f"{row['kernel_type']:<23} {int(row['matrix_size']):<6} "
+                       f"{row['|C-C_ref|_avg']:<13.3e} {row['|C-C_ref|/(|A||B|)_avg']:<16.3e} "
+                       f"{row['theoretical_beta']:<13.3e} {row['E_{AB}/u']:<12.3e} {row['E_{AB}/beta']:<12.3e}\n")
 
             f.write("\n")
 
@@ -157,8 +161,8 @@ def print_quick_summary(df):
     print(f"Sizes: {sorted(df['matrix_size'].unique())}")
 
     print(f"\nOverall Statistics:")
-    print(f"  Frobenius Error - Mean: {df['frob_avg'].mean():.3e}, Std: {df['frob_avg'].std():.3e}")
-    print(f"  Normalized Error - Mean: {df['beta_avg'].mean():.3e}, Std: {df['beta_avg'].std():.3e}")
+    print(f"  Frobenius Error - Mean: {df['|C-C_ref|_avg'].mean():.3e}, Std: {df['|C-C_ref|_avg'].std():.3e}")
+    print(f"  Normalized Error - Mean: {df['|C-C_ref|/(|A||B|)_avg'].mean():.3e}, Std: {df['|C-C_ref|/(|A||B|)_avg'].std():.3e}")
     print(f"  E_AB/u - Mean: {df['E_{AB}/u'].mean():.3e}, Std: {df['E_{AB}/u'].std():.3e}")
     print(f"  E_AB/beta - Mean: {df['E_{AB}/beta'].mean():.3e}, Std: {df['E_{AB}/beta'].std():.3e}")
 
@@ -177,7 +181,7 @@ def main():
         return
 
     # Check required columns
-    required_cols = ['kernel_type', 'matrix_type', 'matrix_size', 'frob_avg', 'beta_avg', 'theoretical_beta', 'E_{AB}/u', 'E_{AB}/beta']
+    required_cols = ['kernel_type', 'matrix_type', 'matrix_size', '|C-C_ref|_avg', '|C-C_ref|/(|A||B|)_avg', 'theoretical_beta', 'E_{AB}/u', 'E_{AB}/beta']
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         print(f"Missing columns: {missing}")

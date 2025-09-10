@@ -4,7 +4,8 @@
 #include <cublas_v2.h>
 #include <stdio.h>
 #include "cutlass/gemm/device/gemm.h"
-#include <vector_types.h>  // For float4 definition
+#include <vector_types.h>
+#include <vector>
 
 extern int g_pitch_A;  // Declare extern to access from benchmark.cu
 
@@ -458,53 +459,269 @@ void launch_cutlass_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 block
     launch_cutlass(d_A, d_B, d_C, n, blocks, threads);
 }
 
-// Square tiled implementation with dynamic shared memory
-__global__ void matmul_tiled_square(float *A, float *B, float *C, int N, int tile_size) {
-    // Use dynamic shared memory or template parameter
-    extern __shared__ float shared_mem[];
-    float* tile_A = shared_mem;                           // [tile_size][tile_size]
-    float* tile_B = &shared_mem[tile_size * tile_size];   // [tile_size][tile_size]
+#define CUDA_CHECK_CUTLASS(stmt) do {                               \
+    cudaError_t err = (stmt);                                       \
+    if (err != cudaSuccess) {                                       \
+        fprintf(stderr, "CUDA error %s at %s:%d\n",                 \
+                cudaGetErrorString(err), __FILE__, __LINE__);       \
+        std::exit(EXIT_FAILURE);                                    \
+    }                                                               \
+} while(0)
 
-    // Thread indices
-    int tx = threadIdx.x, ty = threadIdx.y;
-    int bx = blockIdx.x, by = blockIdx.y;
+#define CUTLASS_CHECK(status) do {                                  \
+    cutlass::Status s = (status);                                   \
+    if (s != cutlass::Status::kSuccess) {                           \
+        fprintf(stderr, "CUTLASS error at %s:%d: %d\n",             \
+                __FILE__, __LINE__, int(s));                        \
+        std::exit(EXIT_FAILURE);                                    \
+    }                                                               \
+} while(0)
 
-    // Global indices for this thread
-    int row = by * tile_size + ty;
-    int col = bx * tile_size + tx;
+// Kernel for pairwise reduction of partial results
+__global__ void add_inplace_rn(float* __restrict__ L,
+                               const float* __restrict__ R,
+                               int M, int N, int ldc) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = M * N;
 
-    // Accumulator - keep in register
-    float sum = 0.0f;
-    int num_tiles = (N + tile_size - 1) / tile_size;
+    for (int t = tid; t < total; t += blockDim.x * gridDim.x) {
+        int i = t / N;               // row
+        int j = t - i * N;           // col
+        int idx = i * ldc + j;
+        L[idx] = __fadd_rn(L[idx], R[idx]);
+    }
+}
 
-    // Main tiling loop
-    for (int t = 0; t < num_tiles; ++t) {
-        // Load tile A - coalesced memory access
-        int A_row = row;
-        int A_col = t * tile_size + tx;
-        tile_A[ty * tile_size + tx] = (A_row < N && A_col < N) ? A[A_row * N + A_col] : 0.0f;
+// Flat split-K GEMM implementation (sequential accumulation)
+void cutlass_splitk_flat(int M, int N, int K,
+                         const float* dA, int lda,
+                         const float* dB, int ldb,
+                         float* dC, int ldc,
+                         int split_k_slices) {
 
-        // Load tile B - coalesced memory access
-        int B_row = t * tile_size + ty;
-        int B_col = col;
-        tile_B[ty * tile_size + tx] = (B_row < N && B_col < N) ? B[B_row * N + B_col] : 0.0f;
+    // Pre-allocate all temporary memory to avoid allocation overhead
+    std::vector<float*> A_slices(split_k_slices);
+    std::vector<float*> B_slices(split_k_slices);
+    std::vector<cudaStream_t> streams(split_k_slices);
 
-        // Wait for all threads to finish loading
-        __syncthreads();
+    // Calculate slice sizes
+    std::vector<int> k_starts(split_k_slices);
+    std::vector<int> k_sizes(split_k_slices);
 
-        // Compute partial dot product with optimizations
-        #pragma unroll
-        for (int k = 0; k < tile_size; ++k) {
-            // Use fused multiply-add for better performance
-            sum = __fmaf_rn(tile_A[ty * tile_size + k], tile_B[k * tile_size + tx], sum);
+    for (int s = 0; s < split_k_slices; s++) {
+        k_starts[s] = (s * K) / split_k_slices;
+        int k_end = ((s + 1) * K) / split_k_slices;
+        k_sizes[s] = k_end - k_starts[s];
+
+        if (k_sizes[s] > 0) {
+            cudaMalloc(&A_slices[s], M * k_sizes[s] * sizeof(float));
+            cudaMalloc(&B_slices[s], k_sizes[s] * N * sizeof(float));
+            cudaStreamCreate(&streams[s]);
         }
-
-        // Wait before loading next tiles
-        __syncthreads();
     }
 
-    // Write result to global memory
-    if (row < N && col < N) {
-        C[row * N + col] = sum;
+    // Launch all slice preparations in parallel using streams
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        int k0 = k_starts[s];
+        int Ks = k_sizes[s];
+
+        // Use 2D memcpy for better performance
+        cudaMemcpy2DAsync(A_slices[s], Ks * sizeof(float),
+                         dA + k0, lda * sizeof(float),
+                         Ks * sizeof(float), M,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+
+        cudaMemcpy2DAsync(B_slices[s], N * sizeof(float),
+                         dB + k0 * ldb, ldb * sizeof(float),
+                         N * sizeof(float), Ks,
+                         cudaMemcpyDeviceToDevice, streams[s]);
     }
+
+    // Execute GEMM operations sequentially with accumulation
+    using Gemm = cutlass::gemm::device::Gemm<
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float>;
+
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        // Wait for this slice's data to be ready
+        cudaStreamSynchronize(streams[s]);
+
+        cutlass::gemm::GemmCoord problem{M, N, k_sizes[s]};
+        float beta = (s == 0) ? 0.0f : 1.0f;  // First slice overwrites, subsequent accumulate
+
+        typename Gemm::Arguments arguments(
+            problem,
+            {A_slices[s], k_sizes[s]},
+            {B_slices[s], N},
+            {dC, ldc},         // Input for accumulation (when beta=1)
+            {dC, ldc},         // Output
+            {1.0f, beta}       // alpha=1, beta=0 (first) or beta=1 (accumulate)
+        );
+
+        Gemm gemm;
+        auto status = gemm.initialize(arguments);
+        if (status == cutlass::Status::kSuccess) {
+            gemm();
+        } else {
+            printf("CUTLASS error in slice %d\n", s);
+        }
+    }
+
+    // Cleanup
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] > 0) {
+            cudaFree(A_slices[s]);
+            cudaFree(B_slices[s]);
+            cudaStreamDestroy(streams[s]);
+        }
+    }
+
+    cudaDeviceSynchronize();
+}
+
+// Pairwise split-K GEMM implementation (tree reduction)
+void cutlass_splitk_pairwise(int M, int N, int K,
+                             const float* dA, int lda,
+                             const float* dB, int ldb,
+                             float* dC, int ldc,
+                             int split_k_slices) {
+
+    // Pre-allocate all temporary memory to avoid allocation overhead
+    std::vector<float*> A_slices(split_k_slices);
+    std::vector<float*> B_slices(split_k_slices);
+    std::vector<float*> C_workspaces(split_k_slices);  // Separate workspaces for each slice
+    std::vector<cudaStream_t> streams(split_k_slices);
+
+    // Calculate slice sizes
+    std::vector<int> k_starts(split_k_slices);
+    std::vector<int> k_sizes(split_k_slices);
+
+    size_t bytesC = size_t(ldc) * size_t(M) * sizeof(float);
+
+    for (int s = 0; s < split_k_slices; s++) {
+        k_starts[s] = (s * K) / split_k_slices;
+        int k_end = ((s + 1) * K) / split_k_slices;
+        k_sizes[s] = k_end - k_starts[s];
+
+        if (k_sizes[s] > 0) {
+            cudaMalloc(&A_slices[s], M * k_sizes[s] * sizeof(float));
+            cudaMalloc(&B_slices[s], k_sizes[s] * N * sizeof(float));
+            cudaMalloc(&C_workspaces[s], bytesC);  // Workspace for this slice
+            cudaMemset(C_workspaces[s], 0, bytesC);  // Zero initialize
+            cudaStreamCreate(&streams[s]);
+        }
+    }
+
+    // Launch all slice preparations in parallel using streams
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        int k0 = k_starts[s];
+        int Ks = k_sizes[s];
+
+        // Use 2D memcpy for better performance
+        cudaMemcpy2DAsync(A_slices[s], Ks * sizeof(float),
+                         dA + k0, lda * sizeof(float),
+                         Ks * sizeof(float), M,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+
+        cudaMemcpy2DAsync(B_slices[s], N * sizeof(float),
+                         dB + k0 * ldb, ldb * sizeof(float),
+                         N * sizeof(float), Ks,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+    }
+
+    // Execute GEMM operations into separate workspaces in parallel!
+    using Gemm = cutlass::gemm::device::Gemm<
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float>;
+
+    std::vector<Gemm> gemm_ops(split_k_slices);
+
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        // Wait for this slice's data to be ready
+        cudaStreamSynchronize(streams[s]);
+
+        cutlass::gemm::GemmCoord problem{M, N, k_sizes[s]};
+
+        typename Gemm::Arguments arguments(
+            problem,
+            {A_slices[s], k_sizes[s]},
+            {B_slices[s], N},
+            {C_workspaces[s], ldc},  // Output to workspace (not accumulating)
+            {C_workspaces[s], ldc},
+            {1.0f, 0.0f}             // alpha=1, beta=0 (no accumulation, fresh workspace)
+        );
+
+        auto status = gemm_ops[s].initialize(arguments);
+        if (status == cutlass::Status::kSuccess) {
+            // Launch on the slice's stream for parallelism
+            cudaStream_t stream = streams[s];
+            gemm_ops[s](stream);
+        } else {
+            printf("CUTLASS error in slice %d\n", s);
+        }
+    }
+
+    cudaDeviceSynchronize();
+
+    // Now perform pairwise reduction of workspaces
+    std::vector<float*> work = C_workspaces;  // Copy workspace pointers for reduction
+    int threads = 256;
+    int blocks = (M * N + threads - 1) / threads;
+
+    while (work.size() > 1) {
+        std::vector<float*> next;
+        for (size_t i = 0; i + 1 < work.size(); i += 2) {
+            // Add work[i+1] into work[i] in-place
+            add_inplace_rn<<<blocks, threads>>>(work[i], work[i+1], M, N, ldc);
+            cudaDeviceSynchronize();
+            next.push_back(work[i]);  // Left workspace holds the sum
+        }
+        if (work.size() & 1) {
+            next.push_back(work.back());  // Carry odd one up
+        }
+        work.swap(next);
+    }
+
+    // Copy final result to output
+    cudaMemcpy2D(dC, sizeof(float) * ldc,
+                 work[0], sizeof(float) * ldc,
+                 sizeof(float) * N, M, cudaMemcpyDeviceToDevice);
+
+    // Cleanup
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] > 0) {
+            cudaFree(A_slices[s]);
+            cudaFree(B_slices[s]);
+            cudaFree(C_workspaces[s]);
+            cudaStreamDestroy(streams[s]);
+        }
+    }
+
+    cudaDeviceSynchronize();
+}
+void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    int split_k_slices = SPLIT_K_SLICES;
+    printf("Running CUTLASS Split-K (flat) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
+    cutlass_splitk_flat(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
+    cudaDeviceSynchronize();
+}
+
+// Launch wrapper for CUTLASS Split-K pairwise (tree reduction) kernel
+void launch_cutlass_splitk_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    int split_k_slices = SPLIT_K_SLICES;
+    printf("Running CUTLASS Split-K (pairwise) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
+    cutlass_splitk_pairwise(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
+    cudaDeviceSynchronize();
 }
