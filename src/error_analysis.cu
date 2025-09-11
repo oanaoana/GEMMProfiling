@@ -777,11 +777,11 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
                 kernelTypeToString(kernel_type),
                 n,
                 num_samples);
-        fprintf(fp, "%.10e,%.10e,%.10e,%.10e,",
+        fprintf(fp, "%.16e,%.16e,%.16e,%.16e,",
                 frob_stats.average, frob_stats.std_dev, frob_stats.p95, frob_stats.maximum);
-        fprintf(fp, "%.10e,%.10e,%.10e,%.10e,",
+        fprintf(fp, "%.16e,%.16e,%.16e,%.16e,",
                 beta_stats.average, beta_stats.std_dev, beta_stats.p95, beta_stats.maximum);
-        fprintf(fp, "%.10e,%.10e,%.10e,%.10e\n",
+        fprintf(fp, "%.16e,%.16e,%.16e,%.16e\n",
                 beta_factor, u32, beta_stats.average/beta_factor, beta_stats.average/u32);
 
         fclose(fp);

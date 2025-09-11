@@ -387,11 +387,11 @@ void assess_kernel_resources(KernelType kernel_type, int n) {
                 printf("    Active blocks per SM: %d\n", maxActiveBlocks);
                 printf("    Active threads per SM: %d\n", activeThreadsPerSM);
                 printf("    Theoretical occupancy: %.1f%%\n", occupancy_percent);
-                
+
                 // Calculate limiting factors
                 int max_blocks_by_threads = prop.maxThreadsPerMultiProcessor / threadsPerBlockTotal;
                 int max_blocks_by_sm_limit = prop.maxBlocksPerMultiProcessor;
-                
+
                 printf("    Limiting factors:\n");
                 printf("      Max blocks by thread limit: %d\n", max_blocks_by_threads);
                 printf("      Max blocks by SM limit: %d\n", max_blocks_by_sm_limit);
