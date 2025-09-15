@@ -16,10 +16,13 @@ echo ""
 mkdir -p data
 
 # Define test parameters
-KERNELS=("tiled" "tiled_pairwise" "cublas" "cutlass_splitk_flat" "cutlass_splitk_pairwise")
+#KERNELS=("tiled" "tiled_pairwise" "cublas" "cutlass_splitk_flat" "cutlass_splitk_pairwise")
+KERNELS=("cutlass_splitk_flat" "cutlass_splitk_pairwise")
+#KERNELS=("cublas")
 #MATRIX_TYPES=("uniform_positive" "wellcond" "illcond" "zeromean" "2powers")
 MATRIX_TYPES=("uniform_positive")
-SIZES=(256 384 512 1024 1536 2048 3072)
+# "wellcond" "illcond" "zeromean" "2powers")
+SIZES=(256 384 512 1024 1280 1536 1792 2048 3072 4096)
 #SIZES=(256 384 512 768 1024 1280 1536 1792 2048 3072 4096)
 
 # Counter for progress tracking

@@ -585,6 +585,150 @@ void cutlass_splitk_flat(int M, int N, int K,
     cudaDeviceSynchronize();
 }
 
+// Template version of cutlass_splitk_pairwise for compile-time slice counts
+template<int SLICES>
+void cutlass_splitk_pairwise_template(int M, int N, int K,
+                                      const float* dA, int lda,
+                                      const float* dB, int ldb,
+                                      float* dC, int ldc) {
+    const int split_k_slices = SLICES;
+
+    // Pre-allocate all temporary memory to avoid allocation overhead
+    std::vector<float*> A_slices(split_k_slices);
+    std::vector<float*> B_slices(split_k_slices);
+    std::vector<float*> C_workspaces(split_k_slices);  // Separate workspaces for each slice
+    std::vector<cudaStream_t> streams(split_k_slices);
+
+    // Calculate slice sizes
+    std::vector<int> k_starts(split_k_slices);
+    std::vector<int> k_sizes(split_k_slices);
+
+    size_t bytesC = size_t(ldc) * size_t(M) * sizeof(float);
+
+    for (int s = 0; s < split_k_slices; s++) {
+        k_starts[s] = (s * K) / split_k_slices;
+        int k_end = ((s + 1) * K) / split_k_slices;
+        k_sizes[s] = k_end - k_starts[s];
+
+        if (k_sizes[s] > 0) {
+            cudaMalloc(&A_slices[s], M * k_sizes[s] * sizeof(float));
+            cudaMalloc(&B_slices[s], k_sizes[s] * N * sizeof(float));
+            cudaMalloc(&C_workspaces[s], bytesC);  // Workspace for this slice
+            cudaMemset(C_workspaces[s], 0, bytesC);  // Zero initialize
+            cudaStreamCreate(&streams[s]);
+        }
+    }
+
+    // Launch all slice preparations in parallel using streams
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        int k0 = k_starts[s];
+        int Ks = k_sizes[s];
+
+        // Use 2D memcpy for better performance
+        cudaMemcpy2DAsync(A_slices[s], Ks * sizeof(float),
+                         dA + k0, lda * sizeof(float),
+                         Ks * sizeof(float), M,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+
+        cudaMemcpy2DAsync(B_slices[s], N * sizeof(float),
+                         dB + k0 * ldb, ldb * sizeof(float),
+                         N * sizeof(float), Ks,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+    }
+
+    // Execute GEMM operations into separate workspaces in parallel!
+    using Gemm = cutlass::gemm::device::Gemm<
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float>;
+
+    std::vector<Gemm> gemm_ops(split_k_slices);
+
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        // Wait for this slice's data to be ready
+        cudaStreamSynchronize(streams[s]);
+
+        cutlass::gemm::GemmCoord problem{M, N, k_sizes[s]};
+
+        typename Gemm::Arguments arguments(
+            problem,
+            {A_slices[s], k_sizes[s]},
+            {B_slices[s], N},
+            {C_workspaces[s], ldc},  // Output to workspace (not accumulating)
+            {C_workspaces[s], ldc},
+            {1.0f, 0.0f}             // alpha=1, beta=0 (no accumulation, fresh workspace)
+        );
+
+        auto status = gemm_ops[s].initialize(arguments);
+        if (status == cutlass::Status::kSuccess) {
+            // Launch on the slice's stream for parallelism
+            cudaStream_t stream = streams[s];
+            gemm_ops[s](stream);
+        } else {
+            printf("CUTLASS error in slice %d\n", s);
+        }
+    }
+
+    cudaDeviceSynchronize();
+
+    // Now perform pairwise reduction of workspaces
+    std::vector<float*> work = C_workspaces;  // Copy workspace pointers for reduction
+    int threads = 256;
+    int blocks = (M * N + threads - 1) / threads;
+
+    while (work.size() > 1) {
+        std::vector<float*> next;
+        for (size_t i = 0; i + 1 < work.size(); i += 2) {
+            // Add work[i+1] into work[i] in-place
+            add_inplace_rn<<<blocks, threads>>>(work[i], work[i+1], M, N, ldc);
+            cudaDeviceSynchronize();
+            next.push_back(work[i]);  // Left workspace holds the sum
+        }
+        if (work.size() & 1) {
+            next.push_back(work.back());  // Carry odd one up
+        }
+        work.swap(next);
+    }
+
+    // Copy final result to output
+    cudaMemcpy2D(dC, sizeof(float) * ldc,
+                 work[0], sizeof(float) * ldc,
+                 sizeof(float) * N, M, cudaMemcpyDeviceToDevice);
+
+    // Cleanup
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] > 0) {
+            cudaFree(A_slices[s]);
+            cudaFree(B_slices[s]);
+            cudaFree(C_workspaces[s]);
+            cudaStreamDestroy(streams[s]);
+        }
+    }
+
+    cudaDeviceSynchronize();
+}
+
+// Explicit template instantiations for common slice counts
+template void cutlass_splitk_pairwise_template<8>(int M, int N, int K,
+                                                  const float* dA, int lda,
+                                                  const float* dB, int ldb,
+                                                  float* dC, int ldc);
+
+template void cutlass_splitk_pairwise_template<16>(int M, int N, int K,
+                                                   const float* dA, int lda,
+                                                   const float* dB, int ldb,
+                                                   float* dC, int ldc);
+
+template void cutlass_splitk_pairwise_template<32>(int M, int N, int K,
+                                                   const float* dA, int lda,
+                                                   const float* dB, int ldb,
+                                                   float* dC, int ldc);
+
 // Pairwise split-K GEMM implementation (tree reduction)
 void cutlass_splitk_pairwise(int M, int N, int K,
                              const float* dA, int lda,
@@ -713,7 +857,7 @@ void cutlass_splitk_pairwise(int M, int N, int K,
 }
 void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     int split_k_slices = SPLIT_K_SLICES;
-    printf("Running CUTLASS Split-K (flat) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
+    //printf("Running CUTLASS Split-K (flat) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
     cutlass_splitk_flat(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
     cudaDeviceSynchronize();
 }
@@ -721,7 +865,7 @@ void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 
 // Launch wrapper for CUTLASS Split-K pairwise (tree reduction) kernel
 void launch_cutlass_splitk_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     int split_k_slices = SPLIT_K_SLICES;
-    printf("Running CUTLASS Split-K (pairwise) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
+    //printf("Running CUTLASS Split-K (pairwise) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
     cutlass_splitk_pairwise(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
     cudaDeviceSynchronize();
 }

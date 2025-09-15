@@ -32,6 +32,18 @@ void launch_cutlass_tensor(float* d_A, float* d_B, float* d_C, int n, dim3 block
 void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_cutlass_splitk_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 
+// Template version of cutlass_splitk_pairwise for compile-time slice counts
+template<int SLICES>
+void cutlass_splitk_pairwise_template(int M, int N, int K,
+                                      const float* dA, int lda,
+                                      const float* dB, int ldb,
+                                      float* dC, int ldc);
+
+void cutlass_splitk_pairwise(int M, int N, int K,
+                            const float* dA, int lda,
+                            const float* dB, int ldb,
+                            float* dC, int ldc);
+
 // Original cuBLAS wrapper that takes handle
 void launch_cublas_handle(cublasHandle_t handle, float* d_A, float* d_B, float* d_C, int n);
 

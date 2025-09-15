@@ -21,6 +21,7 @@ typedef struct {
     double std_dev;
     double minimum;
     double maximum;
+    double p10;  // 10th percentile
     double p95;  // 95th percentile
 } ArrayStats;
 

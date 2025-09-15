@@ -448,10 +448,23 @@ void compute_array_statistics(const double* array, int size, ArrayStats* stats) 
     }
     stats->std_dev = sqrt(variance_sum / size);
 
-    // Sort array and calculate 95th percentile
+    // Sort array and calculate percentiles
     qsort(sorted_array, size, sizeof(double), compare_doubles);
 
-    // Calculate 95th percentile index
+    // Calculate 10th percentile
+    double percentile_index_10 = 0.10 * (size - 1);
+    int lower_index_10 = (int)floor(percentile_index_10);
+    int upper_index_10 = (int)ceil(percentile_index_10);
+
+    if (lower_index_10 == upper_index_10) {
+        stats->p10 = sorted_array[lower_index_10];
+    } else {
+        // Linear interpolation between the two closest values
+        double weight_10 = percentile_index_10 - lower_index_10;
+        stats->p10 = sorted_array[lower_index_10] * (1.0 - weight_10) + sorted_array[upper_index_10] * weight_10;
+    }
+
+    // Calculate 95th percentile
     double percentile_index = 0.95 * (size - 1);
     int lower_index = (int)floor(percentile_index);
     int upper_index = (int)ceil(percentile_index);
