@@ -22,7 +22,7 @@ from io import StringIO
 
 
 # Configure data folder here
-DATA_FOLDER = "data"  # Change this to "data" for current data
+DATA_FOLDER = "data/data9_17"  # Change this to "data" for current data
 OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)
@@ -50,7 +50,25 @@ KERNEL_MARKERS = {
 # Line and marker styling
 LINE_WIDTH = 1.5          # Width of plot lines
 MARKER_SIZE = 9           # Size of markers
-THEORETICAL_LINE_WIDTH = 2  # Width of theoretical/reference lines
+THEORETICAL_LINE_WIDTH = 1.5  # Width of theoretical/reference lines
+
+# Font size configuration - adjust these for your report
+AXIS_LABEL_FONTSIZE = 18   # Size for axis labels (xlabel, ylabel)
+TICK_LABEL_FONTSIZE = 16   # Size for tick labels (numbers on axes)
+LEGEND_FONTSIZE = 14       # Size for legend text
+TITLE_FONTSIZE = 18        # Size for plot titles
+DEFAULT_FONTSIZE = 14      # Default matplotlib font size
+
+# Font weight configuration - set to True for bold, False for normal
+AXIS_LABEL_BOLD = False     # Make axis labels bold
+TICK_LABEL_BOLD = False    # Make tick labels bold
+
+# Calibration configuration - specific matrix sizes to use for c_hat calibration
+CUTLASS_CALIBRATION_SIZES = [4096]  # Only use these sizes for CUTLASS kernel calibration
+
+# Deff plot configuration - select ONE kernel to plot
+DEFF_SELECT_KERNEL = 'cublas'  # Which kernel to plot: 'cublas', 'tiled', 'cutlass_splitk_flat', 'cutlass_splitk_pairwise', 'tiled_pairwise'
+DEFF_PLOT_ALL_KERNELS = True # Set to True to generate Deff plots for ALL kernels in addition to the selected one
 
 KERNEL_LABELS = {
     'cublas': 'cuBLAS',
@@ -61,7 +79,7 @@ KERNEL_LABELS = {
 }
 
 # Enable better mathematical notation using matplotlib's mathtext (no LaTeX required)
-plt.rcParams['font.size'] = 12
+plt.rcParams['font.size'] = DEFAULT_FONTSIZE
 
 def save_plot(base_filename, format='both', dpi=300, bbox_inches='tight'):
     """Save the current plot in specified format(s).
@@ -174,11 +192,22 @@ def create_beta_plots(df, actual_matrix_sizes):
 
         # Overlays removed as requested
 
-        plt.xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        plt.ylabel(r'$\mathbf{E_{AB} / u}$', fontsize=14, weight='bold')
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        # Create conditional mathtext labels based on bold setting
+        y_label_text = r'$\mathbf{E_{AB} / u}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u$'
+
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
-        plt.tick_params(axis='both', which='major', labelsize=12)
+
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        # Apply bold formatting to tick labels if requested
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -218,11 +247,22 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        plt.xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        plt.ylabel(r'$\mathbf{E_{AB} / \beta}$', fontsize=14, weight='bold')
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        # Create conditional mathtext labels based on bold setting
+        y_label_text = r'$\mathbf{E_{AB} / \beta}$' if AXIS_LABEL_BOLD else r'$E_{AB} / \beta$'
+
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
-        plt.tick_params(axis='both', which='major', labelsize=12)
+
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        # Apply bold formatting to tick labels if requested
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -270,11 +310,22 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        plt.xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        plt.ylabel(r'$\mathbf{E_{AB}}$', fontsize=14, weight='bold')
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        # Create conditional mathtext labels based on bold setting
+        y_label_text = r'$\mathbf{E_{AB}}$' if AXIS_LABEL_BOLD else r'$E_{AB}$'
+
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
-        plt.tick_params(axis='both', which='major', labelsize=12)
+
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        # Apply bold formatting to tick labels if requested
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -346,45 +397,69 @@ def beta_over_u_splitk_pairwise(K, S=16, u=U32):
     beta = gamma_of(Ks, u) + gamma_of(ceil_log2(S), u)
     return beta / u
 
-def calibrate_c_hat(E_over_beta_values):
+def calibrate_c_hat(log_c_hat_median_values, matrix_sizes=None, target_sizes=None):
     """
-    Input: array of E/β values for a single kernel across all matrix sizes
-    Returns: scalar c_hat as median over all values
+    Input: array of log_c_hat_median values for a single kernel across all matrix sizes
+           matrix_sizes: corresponding matrix sizes (optional)
+           target_sizes: specific sizes to use for calibration (optional)
+    Returns: scalar c_hat as exp(median(log_c_hat_median_values))
     """
-    arr = np.asarray(E_over_beta_values, dtype=np.float64)
-    return float(np.median(arr))
+    arr = np.asarray(log_c_hat_median_values, dtype=np.float64)
+
+    # If target sizes are specified and matrix_sizes are provided, filter the data
+    if target_sizes is not None and matrix_sizes is not None:
+        matrix_sizes = np.asarray(matrix_sizes)
+        mask = np.isin(matrix_sizes, target_sizes)
+        if np.any(mask):
+            arr = arr[mask]
+            print(f"  Using calibration sizes {target_sizes}, found {np.sum(mask)} matching data points")
+        else:
+            print(f"  Warning: No data found for target sizes {target_sizes}, using all data")
+
+    median_log_c_hat = float(np.median(arr))
+    return float(np.exp(median_log_c_hat))
 
 def predict_E_over_u(beta_over_u, c_hat):
     """Elementwise predicted E/u = c_hat * (beta/u)."""
+    print(f"Predicting E/u with c_hat: {c_hat}")
     return c_hat * np.asarray(beta_over_u, dtype=np.float64)
 
-def create_deff_plot(df, actual_matrix_sizes, kernel_filter, plot_name, theoretical_func=None, theoretical_params=None, theoretical_label=None, theoretical_color='darkblue', multiple_theories=None):
+def create_single_kernel_deff_plot(df, actual_matrix_sizes, kernel_name):
     """
-    Create effective depth plot overlayed with beta/u for specified kernels.
+    Create effective depth plot for ONE specific kernel with appropriate theoretical line.
 
     Args:
         df: DataFrame with the data
         actual_matrix_sizes: List of matrix sizes from data
-        kernel_filter: Function that takes kernel name and returns True if it should be included
-        plot_name: Name for the plot files (e.g., "cutlass_splitk_pairwise", "tiled_pairwise", "all_kernels")
-        theoretical_func: Function to compute theoretical beta/u (optional)
-        theoretical_params: Dict of parameters for theoretical function (optional)
-        theoretical_label: Label for theoretical line (optional)
-        theoretical_color: Color for theoretical line
-        multiple_theories: List of dicts for multiple theoretical lines (optional)
-                          Each dict should have: {'func': func, 'params': {}, 'label': str, 'color': str}
+        kernel_name: Name of the single kernel to plot
     """
 
     os.makedirs("plots", exist_ok=True)
 
-    # Filter kernels based on the provided filter function
-    matching_kernels = [k for k in df['kernel_type'].unique() if kernel_filter(k)]
-
-    if not matching_kernels:
-        print(f"No kernels found matching filter for {plot_name}")
+    # Check if kernel exists in data
+    available_kernels = sorted(df['kernel_type'].unique())
+    if kernel_name not in available_kernels:
+        print(f"Kernel '{kernel_name}' not found in data. Available: {available_kernels}")
         return
 
-    print(f"Found kernels for {plot_name}: {matching_kernels}")
+    print(f"Creating Deff plot for single kernel: {kernel_name}")
+
+    # Get theoretical function for this kernel
+    theoretical_functions = {
+        'cublas': beta_over_u_tiled_flat,
+        'tiled': beta_over_u_tiled_flat,
+        'cutlass_splitk_flat': beta_over_u_splitk_flat,
+        'cutlass_splitk_pairwise': beta_over_u_splitk_pairwise,
+        'tiled_pairwise': beta_over_u_tiled_pairwise
+    }
+
+    theoretical_params = {
+        'cublas': {'TILE_K': 32},
+        'tiled': {'TILE_K': 32},
+        'cutlass_splitk_flat': {'S': 16},
+        'cutlass_splitk_pairwise': {'S': 16},
+        'tiled_pairwise': {'TILE_K': 32}
+    }
 
     # Get unique matrix types
     matrix_types = sorted(df['matrix_type'].unique())
@@ -393,60 +468,62 @@ def create_deff_plot(df, actual_matrix_sizes, kernel_filter, plot_name, theoreti
     for matrix_type in matrix_types:
         plt.figure(figsize=(12, 8))
 
-        all_y_values = []
+        # Get data for this kernel and matrix type
+        subset = df[(df['matrix_type'] == matrix_type) & (df['kernel_type'] == kernel_name)]
+        if len(subset) == 0:
+            print(f"No data found for {kernel_name} - {matrix_type}")
+            plt.close()
+            continue
 
-        # Plot experimental effective depth for each matching kernel
-        for i, kernel in enumerate(matching_kernels):
-            subset = df[(df['matrix_type'] == matrix_type) & (df['kernel_type'] == kernel)]
-            if len(subset) > 0:
-                subset = subset.sort_values('matrix_size')
+        subset = subset.sort_values('matrix_size')
 
-                # Compute effective depth from experimental data
-                E_over_u = subset['E_{AB}/u'].values
-                E_over_beta = subset['E_{AB}/beta'].values
-                deff_experimental = effective_depth(E_over_u, E_over_beta)
+        # Compute effective depth from experimental data
+        E_over_u = subset['E_{AB}/u'].values
+        E_over_beta = subset['E_{AB}/beta'].values
+        deff_experimental = effective_depth(E_over_u, E_over_beta)
 
-                all_y_values.extend(deff_experimental)
+        # Plot experimental effective depth
+        color = KERNEL_COLORS[kernel_name]
+        marker = KERNEL_MARKERS[kernel_name]
+        plt.plot(subset['matrix_size'], deff_experimental,
+                f'{marker}', color=color,
+                markersize=MARKER_SIZE, fillstyle='none')
 
-                color = KERNEL_COLORS[kernel]
-                marker = KERNEL_MARKERS[kernel]
-                plt.plot(subset['matrix_size'], deff_experimental,
-                        f'{marker}-', color=color,
-                        markersize=MARKER_SIZE, linewidth=LINE_WIDTH, fillstyle='none')
+        all_y_values = list(deff_experimental)
 
-        # Add single theoretical β/u line if provided (TEMPORARILY DISABLED)
-        # if theoretical_func is not None:
-        #     K_grid = np.array(actual_matrix_sizes, dtype=np.int64)
-        #     if theoretical_params:
-        #         theoretical_values = theoretical_func(K_grid, **theoretical_params)
-        #     else:
-        #         theoretical_values = theoretical_func(K_grid)
-
-        #     plt.plot(K_grid, theoretical_values, '--',
-        #             color=theoretical_color, alpha=0.9, linewidth=THEORETICAL_LINE_WIDTH)
-
-        #     all_y_values.extend(theoretical_values)
-
-        # Add multiple theoretical lines if provided
-        if multiple_theories is not None:
+        # Add theoretical line if available
+        if kernel_name in theoretical_functions:
             K_grid = np.array(actual_matrix_sizes, dtype=np.int64)
-            for theory in multiple_theories:
-                if theory['params']:
-                    theoretical_values = theory['func'](K_grid, **theory['params'])
-                else:
-                    theoretical_values = theory['func'](K_grid)
+            theoretical_func = theoretical_functions[kernel_name]
+            params = theoretical_params[kernel_name]
+            theoretical_values = theoretical_func(K_grid, **params)
 
-                linestyle = theory.get('linestyle', '--')
-                plt.plot(K_grid, theoretical_values, linestyle,
-                        color=theory['color'], alpha=0.8, linewidth=THEORETICAL_LINE_WIDTH)
+            # Determine theory line style and color
+            if 'pairwise' in kernel_name:
+                theory_label = 'β/u pairwise (theory)'
+            else:
+                theory_label = 'β/u flat (theory)'
 
-                all_y_values.extend(theoretical_values)
+            plt.plot(K_grid, theoretical_values, '--',
+                    color=color, alpha=0.8, linewidth=THEORETICAL_LINE_WIDTH)
 
-        plt.xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        plt.ylabel(r'$\mathbf{D_{eff}}$', fontsize=14, weight='bold')
+            all_y_values.extend(theoretical_values)
+
+        # Format the plot
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        y_label_text = r'$\mathbf{D_{eff}}$' if AXIS_LABEL_BOLD else r'$D_{eff}$'
+
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
-        plt.tick_params(axis='both', which='major', labelsize=12)
+
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -456,14 +533,128 @@ def create_deff_plot(df, actual_matrix_sizes, kernel_filter, plot_name, theoreti
         if all_y_values:
             y_min, y_max = min(all_y_values), max(all_y_values)
             y_range = y_max / y_min if y_min > 0 else y_max - y_min
-            if y_range > 1:  # Only adjust if there's significant range
-                margin = 0.2  # 20% margin
+            if y_range > 1:
+                margin = 0.2
                 plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
 
         # Save plot
-        base_filename = f"plots/Deff_{plot_name}_{matrix_type}"
+        base_filename = f"plots/Deff_{kernel_name}_{matrix_type}"
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
+
+        print(f"Created: Deff_{kernel_name}_{matrix_type}.{OUTPUT_FORMAT}")
+
+def deff_all_kernels(df, actual_matrix_sizes):
+    """
+    Create effective depth plots with ALL available kernels plotted together in one plot.
+
+    Args:
+        df: DataFrame with the data
+        actual_matrix_sizes: List of matrix sizes from data
+    """
+    available_kernels = sorted(df['kernel_type'].unique())
+    print(f"Creating combined Deff plot for all kernels: {available_kernels}")
+
+    os.makedirs("plots", exist_ok=True)
+
+    # Get theoretical functions and parameters
+    theoretical_functions = {
+        'cublas': beta_over_u_tiled_flat,
+        'tiled': beta_over_u_tiled_flat,
+        'cutlass_splitk_flat': beta_over_u_splitk_flat,
+        'cutlass_splitk_pairwise': beta_over_u_splitk_pairwise,
+        'tiled_pairwise': beta_over_u_tiled_pairwise
+    }
+
+    theoretical_params = {
+        'cublas': {'TILE_K': 32},
+        'tiled': {'TILE_K': 32},
+        'cutlass_splitk_flat': {'S': 16},
+        'cutlass_splitk_pairwise': {'S': 16},
+        'tiled_pairwise': {'TILE_K': 32}
+    }
+
+    # Get unique matrix types
+    matrix_types = sorted(df['matrix_type'].unique())
+
+    # Create one combined plot per matrix type
+    for matrix_type in matrix_types:
+        plt.figure(figsize=(12, 8))
+
+        all_y_values = []
+
+        # Plot each kernel
+        for kernel_name in available_kernels:
+            # Get data for this kernel and matrix type
+            subset = df[(df['matrix_type'] == matrix_type) & (df['kernel_type'] == kernel_name)]
+            if len(subset) == 0:
+                print(f"No data found for {kernel_name} - {matrix_type}")
+                continue
+
+            subset = subset.sort_values('matrix_size')
+
+            # Compute effective depth from experimental data
+            E_over_u = subset['E_{AB}/u'].values
+            E_over_beta = subset['E_{AB}/beta'].values
+            deff_experimental = effective_depth(E_over_u, E_over_beta)
+
+            # Plot experimental effective depth
+            color = KERNEL_COLORS[kernel_name]
+            marker = KERNEL_MARKERS[kernel_name]
+            plt.plot(subset['matrix_size'], deff_experimental,
+                    f'{marker}', color=color,
+                    markersize=MARKER_SIZE, fillstyle='none')
+
+            all_y_values.extend(deff_experimental)
+
+            # Add theoretical line if available
+            if kernel_name in theoretical_functions:
+                K_grid = np.array(actual_matrix_sizes, dtype=np.int64)
+                theoretical_func = theoretical_functions[kernel_name]
+                params = theoretical_params[kernel_name]
+                theoretical_values = theoretical_func(K_grid, **params)
+
+                plt.plot(K_grid, theoretical_values, '--',
+                        color=color, alpha=0.8, linewidth=THEORETICAL_LINE_WIDTH)
+
+                all_y_values.extend(theoretical_values)
+
+        # Format the plot
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        y_label_text = r'$\mathbf{D_{eff}}$' if AXIS_LABEL_BOLD else r'$D_{eff}$'
+
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.grid(True, alpha=0.3)
+        plt.yscale('log')
+
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
+
+        # Set x-axis to show only powers of 2
+        tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
+        plt.xticks(tick_positions, tick_labels)
+
+        # Set y-axis bounds proportional to data
+        if all_y_values:
+            y_min, y_max = min(all_y_values), max(all_y_values)
+            y_range = y_max / y_min if y_min > 0 else y_max - y_min
+            if y_range > 1:
+                margin = 0.2
+                plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
+
+        # Save plot
+        base_filename = f"plots/Deff_all_kernels_{matrix_type}"
+        save_plot(base_filename, format=OUTPUT_FORMAT)
+        plt.close()
+
+        print(f"Created: Deff_all_kernels_{matrix_type}.{OUTPUT_FORMAT}")
+
+    print(f"\n✓ Completed combined Deff plot for {len(available_kernels)} kernels")
 
 def create_uncertainty_band_plots(df, actual_matrix_sizes):
     """Create plots with mean + p10-p90 uncertainty bands for E/u ratios."""
@@ -534,13 +725,13 @@ def create_uncertainty_band_plots(df, actual_matrix_sizes):
                                alpha=0.5, color=color,
                                label=f'{KERNEL_LABELS[kernel]} p10-p95')
 
-        plt.xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        plt.ylabel(r'$\mathbf{E_{AB} / u}$', fontsize=14, weight='bold')
-        plt.title(f'E_{{AB}}/u with Uncertainty Bands - {matrix_type}', fontsize=16, weight='bold')
-        plt.legend(frameon=False, ncol=2, fontsize=12, loc='best')
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight='bold')
+        plt.ylabel(r'$\mathbf{E_{AB} / u}$', fontsize=AXIS_LABEL_FONTSIZE, weight='bold')
+        plt.title(f'E_{{AB}}/u with Uncertainty Bands - {matrix_type}', fontsize=TITLE_FONTSIZE, weight='bold')
+        plt.legend(frameon=False, ncol=2, fontsize=LEGEND_FONTSIZE, loc='best')
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
-        plt.tick_params(axis='both', which='major', labelsize=12)
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -559,8 +750,8 @@ def create_uncertainty_band_plots(df, actual_matrix_sizes):
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
 
-def create_relative_spread_plots(df, actual_matrix_sizes):
-    """Create companion plots showing relative deviation from mean as percentages."""
+def create_spread_cloud_plots(df, actual_matrix_sizes):
+    """Create standalone spread cloud plots showing relative deviation from mean as percentages."""
 
     os.makedirs("plots", exist_ok=True)
 
@@ -568,18 +759,12 @@ def create_relative_spread_plots(df, actual_matrix_sizes):
     matrix_types = sorted(df['matrix_type'].unique())
     kernels = sorted(df['kernel_type'].unique())
 
-    print(f"Creating relative-spread plots for kernels: {kernels}")
+    print(f"Creating standalone spread cloud plots for kernels: {kernels}")
 
     # Create one plot per matrix type
     for matrix_type in matrix_types:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10),
-                                       gridspec_kw={'height_ratios': [2, 1], 'hspace': 0.3})
+        plt.figure(figsize=(10, 6))
 
-        # Colors for kernels
-        colors = ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'pink', 'gray', 'olive', 'cyan']
-        kernel_colors = dict(zip(kernels, colors[:len(kernels)]))
-
-        all_y_values = []
         all_relative_values = []
 
         for kernel in kernels:
@@ -587,7 +772,7 @@ def create_relative_spread_plots(df, actual_matrix_sizes):
             if len(subset) > 0:
                 subset = subset.sort_values('matrix_size')
 
-                # Get mean, p10, and p95 for E/u ratios
+                # Get mean values for E/u ratios
                 mean_values = subset['E_{AB}/u'].values
 
                 u32 = 2.0**-24  # unit roundoff
@@ -598,64 +783,42 @@ def create_relative_spread_plots(df, actual_matrix_sizes):
                 p10_relative = (p10_eu / mean_values - 1) * 100  # (p10/mean - 1) × 100%
                 p95_relative = (p95_eu / mean_values - 1) * 100  # (p95/mean - 1) × 100%
 
-                all_y_values.extend(mean_values)
                 all_relative_values.extend(p10_relative)
                 all_relative_values.extend(p95_relative)
 
                 color = KERNEL_COLORS[kernel]
-                marker = KERNEL_MARKERS[kernel]
 
-                # Top panel: Main plot with mean lines (original scale)
-                ax1.plot(subset['matrix_size'], mean_values, f'{marker}-',
-                        color=color,
-                        linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
-
-                # Bottom panel: Relative spread (companion panel)
-                ax2.fill_between(subset['matrix_size'], p10_relative, p95_relative,
+                # Create spread cloud plot
+                plt.fill_between(subset['matrix_size'], p10_relative, p95_relative,
                                alpha=0.7, color=color)
 
-                # print(f"Relative spread for {kernel} - {matrix_type}:")
-                # print(f"  P10 deviation: {p10_relative}")
-                # print(f"  P95 deviation: {p95_relative}")
-                # print(f"  Spread range: {p95_relative - p10_relative}%")
+        # Format the plot
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel('Deviation from mean (%) - P10 to P95 spread', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
+        plt.grid(True, alpha=0.3)
 
-        # Format top panel (main plot)
-        ax1.set_ylabel(r'$\mathbf{\||C-C_{ref}\||_\infty / (u \||A\|| \||B\||)}$', fontsize=14, weight='bold')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_yscale('log')
-        ax1.tick_params(axis='both', which='major', labelsize=12)
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        # Apply bold formatting to tick labels if requested
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
 
-        # Set x-axis for top panel
+        # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
-        ax1.set_xticks(tick_positions)
-        ax1.set_xticklabels(tick_labels)
-        ax1.set_xticklabels([])  # Remove x-labels from top panel
+        plt.xticks(tick_positions, tick_labels)
 
-        # Format bottom panel (relative spread)
-        ax2.set_xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        ax2.set_ylabel('Deviation from mean (%) - P10 to P95 spread', fontsize=14, weight='bold')
-        ax2.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
-        ax2.grid(True, alpha=0.3)
-        ax2.tick_params(axis='both', which='major', labelsize=12)        # Set x-axis for bottom panel
-        ax2.set_xticks(tick_positions)
-        ax2.set_xticklabels(tick_labels)
-
-        # Set y-axis bounds for relative spread (symmetric around 0)
+        # Set y-axis bounds (symmetric around 0)
         if all_relative_values:
             max_abs_rel = max(abs(min(all_relative_values)), abs(max(all_relative_values)))
             margin = max_abs_rel * 0.1  # 10% margin
-            ax2.set_ylim(-max_abs_rel - margin, max_abs_rel + margin)
-
-        # Set y-axis bounds for main plot
-        if all_y_values:
-            y_min, y_max = min(all_y_values), max(all_y_values)
-            y_range = y_max / y_min if y_min > 0 else y_max - y_min
-            if y_range > 1:
-                margin = 0.2  # 20% margin
-                ax1.set_ylim(y_min * (1 - margin), y_max * (1 + margin))
+            plt.ylim(-max_abs_rel - margin, max_abs_rel + margin)
 
         # Save plot
-        base_filename = f"plots/E_AB_over_u_relative_spread_{matrix_type}"
+        base_filename = f"plots/spread_cloud_{matrix_type}"
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
 
@@ -704,9 +867,19 @@ def create_calibration_comparison_plots(df, actual_matrix_sizes, target_kernels,
             # Get experimental E/u values
             experimental_E_over_u = subset['E_{AB}/u'].values
             experimental_E_over_beta = subset['E_{AB}/beta'].values
+            log_c_hat_median_values = subset['log_c_hat_median'].values
 
-            # Calibrate c_hat using E/β values for this kernel
-            c_hat = calibrate_c_hat(experimental_E_over_beta)
+            # Calibrate c_hat using log_c_hat_median values for this kernel
+            # Use specific sizes for CUTLASS kernels
+            if 'cutlass' in kernel.lower():
+                target_sizes = CUTLASS_CALIBRATION_SIZES
+                print(f"Using specific calibration sizes for {kernel}: {target_sizes}")
+            else:
+                target_sizes = None
+
+            c_hat = calibrate_c_hat(log_c_hat_median_values,
+                                  matrix_sizes=subset['matrix_size'].values,
+                                  target_sizes=target_sizes)
             print(f"Calibrated c_hat for {kernel} ({matrix_type}): {c_hat:.4f}")
 
             # Get theoretical β/u values
@@ -745,12 +918,22 @@ def create_calibration_comparison_plots(df, actual_matrix_sizes, target_kernels,
             all_y_values.extend(experimental_E_over_u)
             all_y_values.extend(predicted_E_over_u_filtered)
 
-        plt.xlabel('K - inner matrix dimension (K=N)', fontsize=14, weight='bold')
-        plt.ylabel(r'$\mathbf{E_{AB} / u}$', fontsize=14, weight='bold')
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        # Create conditional mathtext labels based on bold setting
+        y_label_text = r'$\mathbf{E_{AB} / u}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u$'
+
+        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
-        plt.tick_params(axis='both', which='major', labelsize=12)
-        plt.legend(frameon=False, fontsize=10, loc='best')
+
+        # Configure tick labels
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        # Apply bold formatting to tick labels if requested
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -806,25 +989,26 @@ def main():
     # Create plots
     create_beta_plots(df, actual_matrix_sizes)
 
-    # Create relative-spread companion plots
-    create_relative_spread_plots(df, actual_matrix_sizes)
+    # Create standalone spread cloud plots
+    create_spread_cloud_plots(df, actual_matrix_sizes)
 
-    # Create effective depth plot for all kernels together (with multiple theoretical lines)
-    all_theories = [
-        {'func': beta_over_u_splitk_pairwise, 'params': {'S': 16}, 'label': 'β/u SplitK Pairwise (theory)', 'color': 'red', 'linestyle': '--'},
-        {'func': beta_over_u_tiled_pairwise, 'params': {'TILE_K': 32}, 'label': 'β/u Tiled Pairwise (theory)', 'color': 'green', 'linestyle': ':'},
-        {'func': beta_over_u_splitk_flat, 'params': {'S': 16}, 'label': 'β/u SplitK Flat (theory)', 'color': 'red', 'linestyle': '-.'},
-        {'func': beta_over_u_tiled_flat, 'params': {'TILE_K': 32}, 'label': 'β/u Tiled Flat (theory)', 'color': 'blue', 'linestyle': '-'}  # Blue because cuBLAS and tiled match this
-    ]
+    # Create effective depth plot for selected kernel
+    available_kernels = sorted(df['kernel_type'].unique())
+    print(f"Available kernels: {available_kernels}")
+    print(f"Creating Deff plot for selected kernel: {DEFF_SELECT_KERNEL}")
 
-    create_deff_plot(df, actual_matrix_sizes,
-                    lambda k: True,  # Include all kernels
-                    "all_kernels",
-                    multiple_theories=all_theories)
+    create_single_kernel_deff_plot(df, actual_matrix_sizes, DEFF_SELECT_KERNEL)
+
+    # Optionally create Deff plots for all kernels
+    if DEFF_PLOT_ALL_KERNELS:
+        print(f"DEFF_PLOT_ALL_KERNELS is True - creating plots for all kernels")
+        deff_all_kernels(df, actual_matrix_sizes)
+    else:
+        print(f"DEFF_PLOT_ALL_KERNELS is False - only plotting selected kernel")
 
     # Create calibration comparison plots (experimental vs predicted E/u)
-    # Flat algorithms: cuBLAS and tiled (both use tiled flat pattern)
-    flat_kernels = ['cublas', 'tiled']
+    # Flat algorithms: cuBLAS, tiled, and CUTLASS flat
+    flat_kernels = ['cublas', 'tiled', 'cutlass_splitk_flat']
     create_calibration_comparison_plots(df, actual_matrix_sizes, flat_kernels, "calibration_flat")
 
     # Pairwise algorithms: cutlass_splitk_pairwise and tiled_pairwise
@@ -834,7 +1018,7 @@ def main():
     print("\n✓ All plots created successfully!")
     print("Check plots/ directory for:")
     print("  - E_AB_over_u_*.eps/.png (5 files each format)")
-    print("  - E_AB_over_u_relative_spread_*.eps/.png (5 files each format - relative-spread analysis)")
+    print("  - spread_cloud_*.eps/.png (5 files each format - standalone spread cloud plots)")
     print("  - E_AB_over_beta_*.eps/.png (5 files each format)")
     print("  - E_AB_*.eps/.png (5 files each format)")
     print("  - Deff_all_kernels_*.eps/.png (effective depth plots - all kernels combined)")

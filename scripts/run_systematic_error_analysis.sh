@@ -2,41 +2,32 @@
 
 # Systematic Error Analysis Script
 # ================================
-# This script runs error analysis for all combinations of:
-# - Kernels: tiled, tiled_pairwise, cublas
-# - Matrix Types: uniform_positive, wellcond, illcond, zeromean, 2powers
-# - Sizes: 256, 512, 1024, 2048
+# This script runs error analysis for all combinations defined in systematic_config.sh
+
+# Source the configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/systematic_config.sh"
 
 echo "Starting systematic error analysis..."
-echo "Total configurations: 3 kernels × 5 matrix types × 4 sizes = 60 tests"
+total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
+echo "Total configurations: ${#KERNELS[@]} kernels × ${#MATRIX_TYPES[@]} matrix types × ${#SIZES[@]} sizes = $total_tests tests"
 echo "Estimated time: ~30-45 minutes"
 echo ""
 
 # Create data directory if it doesn't exist
 mkdir -p data
 
-# Define test parameters
-#KERNELS=("tiled" "tiled_pairwise" "cublas" "cutlass_splitk_flat" "cutlass_splitk_pairwise")
-KERNELS=("cutlass_splitk_flat" "cutlass_splitk_pairwise")
-#KERNELS=("cublas")
-#MATRIX_TYPES=("uniform_positive" "wellcond" "illcond" "zeromean" "2powers")
-MATRIX_TYPES=("uniform_positive")
-# "wellcond" "illcond" "zeromean" "2powers")
-SIZES=(256 384 512 1024 1280 1536 1792 2048 3072 4096)
-#SIZES=(256 384 512 768 1024 1280 1536 1792 2048 3072 4096)
-
-# Counter for progress tracking
-total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
-current_test=0
-
-# Start timestamp
-start_time=$(date +%s)
-
 echo "Configuration:"
 echo "  Kernels: ${KERNELS[*]}"
 echo "  Matrix Types: ${MATRIX_TYPES[*]}"
 echo "  Sizes: ${SIZES[*]}"
 echo ""
+
+# Counter for progress tracking
+current_test=0
+
+# Start timestamp
+start_time=$(date +%s)
 
 # Run all combinations
 for kernel in "${KERNELS[@]}"; do
@@ -58,9 +49,6 @@ for kernel in "${KERNELS[@]}"; do
                 echo "    ERROR: Failed test - kernel:$kernel, matrix_type:$matrix_type, size:$size"
                 echo "    Continuing with next test..."
             fi
-
-            # Brief pause between tests
-            sleep 1
         done
         echo ""
     done

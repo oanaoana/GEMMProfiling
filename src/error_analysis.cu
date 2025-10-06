@@ -786,7 +786,7 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     // Compute log c_hat median
     const double u32 = unit_roundoff_fp32();
-    double log_c_hat_median = compute_log_c_hat_median(frobenius_errors, num_samples, beta_factor, u32);
+    double log_c_hat_median = compute_log_c_hat_median(normalized_errors, num_samples, beta_factor, u32);
 
     // Print summary
     printf("\n=== Multi-Sample Analysis Results ===\n");
@@ -816,17 +816,18 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     fp = fopen(filename, "w");
     if (fp) {
         // Write header with all metadata and statistics
-        fprintf(fp, "matrix_type,kernel_type,matrix_size,num_samples,");
+        fprintf(fp, "matrix_type,kernel_type,matrix_size,num_samples,split_k_slices,");
         fprintf(fp, "|C-C_ref|_avg,|C-C_ref|_std,|C-C_ref|_p10,|C-C_ref|_p95,|C-C_ref|_max,");
         fprintf(fp, "|C-C_ref|/(|A||B|)_avg,|C-C_ref|/(|A||B|)_std,|C-C_ref|/(|A||B|)_p10,|C-C_ref|/(|A||B|)_p95,|C-C_ref|/(|A||B|)_max,");
         fprintf(fp, "theoretical_beta,u32,E_{AB}/beta,E_{AB}/u,log_c_hat_median\n");
 
         // Write single row with all the summary data
-        fprintf(fp, "%s,%s,%d,%d,",
+        fprintf(fp, "%s,%s,%d,%d,%d,",
                 matrixTypeToString(matrix_type),
                 kernelTypeToString(kernel_type),
                 n,
-                num_samples);
+                num_samples,
+                SPLIT_K_SLICES);
         fprintf(fp, "%.16e,%.16e,%.16e,%.16e,%.16e,",
                 frob_stats.average, frob_stats.std_dev, frob_stats.p10, frob_stats.p95, frob_stats.maximum);
         fprintf(fp, "%.16e,%.16e,%.16e,%.16e,%.16e,",
