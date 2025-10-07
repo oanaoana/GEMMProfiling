@@ -654,6 +654,48 @@ double compute_log_c_hat_median(const double* frobenius_errors, int num_samples,
     return median_log;
 }
 
+// Per-entry normalized ERROR computation on device
+__global__ void compute_per_entry_normalized_error(float* C_kernel,
+                                                           double* C_reference_fp64,
+                                                           double* abs_AB_product,
+                                                           float* normalized_output,
+                                                           int total_elements) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total_elements) {
+        // Compute the actual error: |C_kernel - C_reference|
+        float c_kernel = C_kernel[idx];
+        double c_ref = C_reference_fp64[idx];
+        double error = fabs((double)c_kernel - c_ref);  // Error in FP64
+
+        double abs_ab = abs_AB_product[idx];
+
+        double normalized_val;
+        if (abs_ab > 0.0) {
+            normalized_val = error / abs_ab;  // |C - C_ref| / (|A| * |B|) in FP64
+        } else {
+            normalized_val = 0.0;  // Handle division by zero
+        }
+
+        normalized_output[idx] = (float)normalized_val;  // Downcast to FP32 for storage
+    }
+}
+
+__global__ void compute_EAB_entrywise(
+    const float*  __restrict__ C_kernel,
+    const double* __restrict__ C_ref64,
+    const double* __restrict__ absAB64,
+    double*       __restrict__ EAB,          // <- FP64 output
+    int n, double denom_floor)               // e.g., 1e-300 or a data-driven floor
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double err = fabs((double)C_kernel[i] - C_ref64[i]);
+        double den = fmax(absAB64[i], denom_floor);   // avoid 0/near-0 blowups
+        EAB[i] = err / den;
+    }
+}
+
+
 
 // Efficient multi-sample testing for specific matrix type and kernel
 // Uses consistent kernel configurations for fair error analysis:
@@ -853,4 +895,162 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     // Cleanup seed array
     delete[] seeds;
+}
+
+// New function to compute per-element normalized ERROR values and analyze per-tile statistics
+// This generates matrices with the same seed as run_multi_sample_analysis
+// and computes |C_kernel - C_reference| / (|A| * |B|) for each matrix element,
+// then analyzes statistics within each TILE_SIZE x TILE_SIZE tile
+void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_type,
+                                    int n, int sample_index, const char* output_prefix,
+                                    bool reproducible) {
+    printf("\n=== Per-Tile Error Analysis ===\n");
+    printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Sample: %d\n",
+           (int)matrix_type, (int)kernel_type, n, n, sample_index);
+    printf("Using TILE_SIZE: %d (from config)\n", TILE_SIZE);
+
+    // Allocate device memory
+    size_t size = n * n * sizeof(float);
+    size_t size_fp64 = n * n * sizeof(double);
+
+    float *d_A, *d_B, *d_C_kernel;
+    double *d_C_reference_fp64;
+    double *d_A_abs, *d_B_abs;
+    double *d_abs_AB_product;
+    float *d_normalized;  // Result of division (FP32 for storage)
+
+    cudaMalloc(&d_A, size);
+    cudaMalloc(&d_B, size);
+    cudaMalloc(&d_C_kernel, size);
+    cudaMalloc(&d_C_reference_fp64, size_fp64);
+    cudaMalloc(&d_A_abs, size_fp64);
+    cudaMalloc(&d_B_abs, size_fp64);
+    cudaMalloc(&d_abs_AB_product, size_fp64);
+    cudaMalloc(&d_normalized, size);
+
+    // Create cuBLAS handle
+    cublasHandle_t cublas_handle;
+    cublasCreate(&cublas_handle);
+
+    // Generate the same seed as in run_multi_sample_analysis
+    unsigned long long* seeds = new unsigned long long[sample_index + 1];
+    if (reproducible) {
+        generate_seed_array(seeds, sample_index + 1, ERROR_SEED);
+    } else {
+        unsigned long long time_seed = (unsigned long long)time(NULL);
+        generate_seed_array(seeds, sample_index + 1, time_seed);
+    }
+
+    // Use the same seed generation logic as run_multi_sample_analysis
+    auto seedA = seeds[sample_index];
+    auto seedB = seedA ^ 0x94D049BB133111EBull;
+
+    printf("Using seedA=%llu, seedB=%llu (same as sample %d in multi-sample analysis)\n",
+           seedA, seedB, sample_index);
+
+    // Generate matrices with the same seeds
+    generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
+    generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
+
+    // CRITICAL: Use the EXACT SAME kernel configuration as run_multi_sample_analysis
+    dim3 threadsPerBlock, numBlocks;
+    compute_kernel_dimensions_dispatch(kernel_type, n, &threadsPerBlock, &numBlocks);
+
+    int total_elements = n * n;
+    int block_size_1d, grid_size_1d;
+    compute_kernel_dimensions_dispatch_1D(total_elements, &block_size_1d, &grid_size_1d);
+
+    // Compute FP64 reference using SAME configuration as run_multi_sample_analysis
+    compute_reference_fp64_device<<<numBlocks, threadsPerBlock>>>(d_A, d_B, d_C_reference_fp64, n);
+
+    // Launch the specified kernel using SAME dispatch as run_multi_sample_analysis
+    launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+
+    // Compute absolute value matrices (convert to FP64)
+    compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_A, d_A_abs, total_elements);
+    compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_B, d_B_abs, total_elements);
+
+    // Compute |A| * |B| using cuBLAS (double precision)
+    const double alpha = 1.0, beta = 0.0;
+    cublasDgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
+                &alpha, d_B_abs, n, d_A_abs, n, &beta, d_abs_AB_product, n);
+
+    // Compute per-entry normalized ERROR values on device: |C_kernel - C_reference| / (|A| * |B|)
+    // Use compute_EAB_entrywise instead of compute_per_entry_normalized_error
+    const double denom_floor = 1e-300;  // Floor to avoid division by near-zero values
+
+    // Keep normalized results in FP64 throughout
+    double *d_normalized_fp64;  // Change from float to double
+    cudaMalloc(&d_normalized_fp64, n * n * sizeof(double));  // Allocate as double
+
+    compute_EAB_entrywise<<<grid_size_1d, block_size_1d>>>(
+        d_C_kernel, d_C_reference_fp64, d_abs_AB_product, d_normalized_fp64, total_elements, denom_floor);
+
+    // NO conversion step needed anymore - keep in FP64
+    cudaDeviceSynchronize();
+
+    // Copy FP64 normalized errors to host
+    double *h_normalized = (double*)malloc(n * n * sizeof(double));
+    cudaMemcpy(h_normalized, d_normalized_fp64, n * n * sizeof(double), cudaMemcpyDeviceToHost);
+
+    // Calculate tile information (but don't compute statistics)
+    int num_tiles_per_dim = (n + TILE_SIZE - 1) / TILE_SIZE;  // Ceiling division
+    int total_tiles = num_tiles_per_dim * num_tiles_per_dim;
+
+    printf("Matrix divided into %dx%d = %d tiles of size %dx%d\n",
+           num_tiles_per_dim, num_tiles_per_dim, total_tiles, TILE_SIZE, TILE_SIZE);
+
+    printf("Per-element |C-C_ref|/(|A|*|B|) computed for full matrix.\n");
+    printf("Tile statistics will be computed in plotting script.\n");
+
+    // Save error matrix + tile information to binary file
+    char filename[256];
+    snprintf(filename, sizeof(filename), "data/%s_%s_per_tile_n%d_sample%d.bin",
+             output_prefix, matrixTypeToString(matrix_type), n, sample_index);
+
+    FILE* fp = fopen(filename, "wb");
+    if (fp) {
+        // Write header (6 integers: n, sample_index, matrix_type, kernel_type, tile_size, num_tiles_per_dim)
+        fwrite(&n, sizeof(int), 1, fp);
+        fwrite(&sample_index, sizeof(int), 1, fp);
+        fwrite(&matrix_type, sizeof(MatrixType), 1, fp);
+        fwrite(&kernel_type, sizeof(KernelType), 1, fp);
+        int tile_size_val = TILE_SIZE;
+        fwrite(&tile_size_val, sizeof(int), 1, fp);
+        fwrite(&num_tiles_per_dim, sizeof(int), 1, fp);
+
+        // Write the per-element error matrix (FP64)
+        fwrite(h_normalized, sizeof(double), n * n, fp);
+
+        fclose(fp);
+        printf("Error matrix saved to: %s\n", filename);
+        printf("File size: %.2f MB\n", (double)(6*sizeof(int) + n*n*sizeof(double)) / (1024*1024));
+    } else {
+        printf("Error: Could not open file for writing\n");
+    }
+
+    // Simplified CSV with just basic info (no pre-computed tile stats)
+    snprintf(filename, sizeof(filename), "data/%s_%s_per_tile_n%d_sample%d_info.csv",
+             output_prefix, matrixTypeToString(matrix_type), n, sample_index);
+
+    fp = fopen(filename, "w");
+    if (fp) {
+        fprintf(fp, "matrix_type,kernel_type,matrix_size,sample_index,seedA,seedB,tile_size,num_tiles_per_dim,total_tiles\n");
+        fprintf(fp, "%s,%s,%d,%d,%llu,%llu,%d,%d,%d\n",
+                matrixTypeToString(matrix_type), kernelTypeToString(kernel_type),
+                n, sample_index, seedA, seedB, TILE_SIZE, num_tiles_per_dim, total_tiles);
+        fclose(fp);
+        printf("Metadata saved to: %s\n", filename);
+    }
+
+    // Cleanup
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C_kernel);
+    cudaFree(d_C_reference_fp64);
+    cudaFree(d_A_abs); cudaFree(d_B_abs); cudaFree(d_abs_AB_product);
+    cudaFree(d_normalized_fp64);  // Updated variable name
+    cublasDestroy(cublas_handle);
+    free(h_normalized);
+    delete[] seeds;
+
+    printf("Per-tile error analysis completed.\n");
 }

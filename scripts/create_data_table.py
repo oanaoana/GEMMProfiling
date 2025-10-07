@@ -16,7 +16,7 @@ import pandas as pd
 import os
 
 # Configure data folder here
-DATA_FOLDER = "data/data_prelim"  # Change this to "data" for current data
+DATA_FOLDER = "data/data9_17"  # Change this to "data" for current data
 
 def load_data():
     """Load all CSV files and return combined dataframe."""

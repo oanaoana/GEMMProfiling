@@ -1,5 +1,5 @@
 # CUDA Compiler
-NVCC = nvcc
+CXX = nvcc
 
 # Directories
 INCLUDE_DIR = ./include
@@ -10,7 +10,9 @@ SRC_DIR = src
 CUTLASS_PATH ?= $(HOME)/cutlass
 
 # Compiler flags
-NVCC_FLAGS = -O3 -std=c++17 -I$(INCLUDE_DIR) #--fmad=false
+CXXFLAGS = -O3 -std=c++17
+INCLUDES = -I./include -I/home/oana/cutlass/include
+NVCC_FLAGS = $(CXXFLAGS) $(INCLUDES) #--fmad=false
 
 # Add CUTLASS include if directory exists
 ifneq ($(wildcard $(CUTLASS_PATH)/include),)
@@ -21,16 +23,16 @@ else
 endif
 
 # Libraries
-LIBS = -lcublas -lcusolver -lcurand
+LIBS = -lcublas -lcurand -lcusolver
 
 # Source files
-SOURCES = $(SRC_DIR)/main.cu $(SRC_DIR)/benchmark.cu $(SRC_DIR)/gemms.cu $(SRC_DIR)/utils.cu $(SRC_DIR)/error_analysis.cu $(SRC_DIR)/generate_test_matrix.cu $(SRC_DIR)/config.cu
+SOURCES = $(wildcard $(SRC_DIR)/*.cu)
 
 # Object files
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.o)
 
 # Target executable
-TARGET = main
+TARGET = gemm_test
 
 # Default target
 all: $(TARGET)
@@ -48,8 +50,8 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cu | $(BUILD_DIR)
 	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
 
 # Link executable
-$(TARGET): $(OBJECTS) | data
-	$(NVCC) $(NVCC_FLAGS) $(OBJECTS) -o $@ $(LIBS)
+$(TARGET): $(SOURCES) | data
+	$(CXX) $(CXXFLAGS) $(PRECISION_FLAGS) $(INCLUDES) $^ $(LIBS) -o $@
 
 # Clean build files
 clean:
@@ -82,6 +84,25 @@ profile-cutlass: $(TARGET)
 profile-cublas: $(TARGET)
 	ncu --set basic ./$(TARGET) --test=cublas --size=1024
 
+# Convenience targets for different precision combinations
+baseline:
+	$(MAKE) COMPUTE_TYPE=float ACCUMULATE_TYPE=float
+
+fp16_mixed:
+	$(MAKE) COMPUTE_TYPE=__half ACCUMULATE_TYPE=float
+
+bf16_mixed:
+	$(MAKE) COMPUTE_TYPE=__nv_bfloat16 ACCUMULATE_TYPE=float
+
+fp64_acc:
+	$(MAKE) COMPUTE_TYPE=float ACCUMULATE_TYPE=double
+
+fp16_fp64:
+	$(MAKE) COMPUTE_TYPE=__half ACCUMULATE_TYPE=double
+
+bf16_fp64:
+	$(MAKE) COMPUTE_TYPE=__nv_bfloat16 ACCUMULATE_TYPE=double
+
 # Help
 help:
 	@echo "Available targets:"
@@ -92,10 +113,17 @@ help:
 	@echo "  test-all          - Run all tests"
 	@echo "  debug             - Build with debug symbols"
 	@echo "  profile-*         - Profile specific implementations"
+	@echo "  baseline           - FP32 compute, FP32 accumulate (default)"
+	@echo "  fp16_mixed       - FP16 compute, FP32 accumulate"
+	@echo "  bf16_mixed       - BF16 compute, FP32 accumulate"
+	@echo "  fp64_acc         - FP32 compute, FP64 accumulate"
+	@echo "  fp16_fp64        - FP16 compute, FP64 accumulate"
+	@echo "  bf16_fp64        - BF16 compute, FP64 accumulate"
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  CUTLASS_PATH - Path to CUTLASS installation (default: ~/cutlass)"
+	@echo ""
+	@echo "Custom usage:"
+	@echo "  make COMPUTE_TYPE=__half ACCUMULATE_TYPE=double"
 
 .PHONY: all clean rebuild test test-all debug help data error-eval-example
-
-.PHONY: all clean rebuild test test-all debug help data

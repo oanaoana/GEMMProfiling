@@ -16,7 +16,8 @@ typedef enum {
     MODE_ULP_ANALYSIS,
     MODE_COMPLETE_ANALYSIS,
     MODE_ALL_BENCHMARKS,
-    MODE_ASSESS_RESOURCES
+    MODE_ASSESS_RESOURCES,
+    MODE_PER_TILE_ANALYSIS  // Add new mode
 } RunMode;
 
 void printUsage() {
@@ -28,27 +29,36 @@ void printUsage() {
     printf("  --ulp-analysis        Run ULP analysis for specific kernel/size\n");
     printf("  --complete            Run both error analysis AND performance test for kernel/size\n");
     printf("  --assess-resources    Assess kernel resource usage for specific kernel/size\n");
+    printf("  --per-tile            Run per-tile reference analysis for specific kernel/size/sample\n");  // Add this line
     printf("\nOptions:\n");
-    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources)\n");
-    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources)\n");
+    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources, --per-tile)\n");
+    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources, --per-tile)\n");
     printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
+    printf("  --sample=N            Specify sample index for per-tile analysis (optional, default: 0)\n");  // Add this line
     printf("  --help                Show this help\n");
-    printf("\nAvailable kernels: naive, tiled, tiled_pairwise, tiled_rect, cublas, cublas_tensor, cutlass, cutlass_splitk_flat, cutlass_splitk_pairwise\n");
-    printf("Available matrix types: wellcond, illcond, zeromean, uniform_positive, 2powers, rademacher, sanity, lognormal, file\n");
-    printf("Available sizes for --all: ");
-    for (int i = 0; i < NUM_SIZES; i++) {
-        printf("%d ", SIZES[i]);
-    }
-    printf("(other modes support any size)\n");
-    printf("\nExamples:\n");
-    printf("  ./main --all\n");
-    printf("  ./main --performance --test=tiled --size=1024\n");
-    printf("  ./main --error-analysis --test=tiled_pairwise --size=768\n");
-    printf("  ./main --error-analysis --test=tiled_pairwise --size=512 --matrix-type=illcond\n");
-    printf("  ./main --ulp-analysis --test=tiled --size=512 --matrix-type=wellcond\n");
-    printf("  ./main --complete --test=tiled_pairwise --size=1024 --matrix-type=normal\n");
-    printf("  ./main --assess-resources --test=cutlass_splitk_flat --size=1024\n");
-    printf("  ./main --complete --test=tiled_pairwise --size=1024\n");
+    printf("\nAvailable kernels:\n");
+    printf("  naive, tiled, tiled_opt, tiled_pairwise, tiled_rect\n");
+    printf("  tiled_mixprec         Mixed precision kernel (uses compile-time COMPUTE_TYPE/ACCUMULATE_TYPE)\n");
+    printf("  cublas, cutlass, etc.\n");
+
+    printf("\nMixed Precision Examples:\n");
+    printf("  make baseline && ./main --performance --test=tiled_mixprec --size=1024\n");
+    printf("  make fp16_mixed && ./main --error-analysis --test=tiled_mixprec --size=512\n");
+    printf("  make bf16_mixed && ./main --performance --test=tiled_mixprec --size=2048\n");
+    printf("  make fp64_acc && ./main --error-analysis --test=tiled_mixprec --size=1024\n");
+}
+
+inline KernelType getKernelTypeFromName(const char* name) {
+    if (strcmp(name, "naive") == 0) return KERNEL_NAIVE;
+    if (strcmp(name, "tiled") == 0) return KERNEL_TILED;
+    if (strcmp(name, "tiled_opt") == 0) return KERNEL_TILED_OPT;
+    if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
+    if (strcmp(name, "tiled_rect") == 0) return KERNEL_TILED_RECT;
+    if (strcmp(name, "tiled_mixprec") == 0) return KERNEL_TILED_MIXPREC;  // Add this line
+    if (strcmp(name, "cublas") == 0) return KERNEL_CUBLAS;
+    if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
+    // ...existing kernels...
+    return KERNEL_NAIVE;
 }
 
 int main(int argc, char **argv) {
@@ -74,6 +84,7 @@ int main(int argc, char **argv) {
     RunMode mode = MODE_NONE;
     char test_name[64] = "";
     int matrix_size = 0;
+    int sample_index = 0;  // Add sample index variable
     MatrixType matrix_type = MATRIX_ODO_WELL_CONDITIONED; // Default to well-conditioned
 
     for (int i = 1; i < argc; i++) {
@@ -92,11 +103,15 @@ int main(int argc, char **argv) {
             mode = MODE_ASSESS_RESOURCES;
         } else if (strcmp(argv[i], "--complete") == 0) {
             mode = MODE_COMPLETE_ANALYSIS;
+        } else if (strcmp(argv[i], "--per-tile") == 0) {  // Add per-tile mode parsing
+            mode = MODE_PER_TILE_ANALYSIS;
         } else if (strncmp(argv[i], "--test=", 7) == 0) {
             strncpy(test_name, argv[i] + 7, sizeof(test_name) - 1);
             test_name[sizeof(test_name) - 1] = '\0';
         } else if (strncmp(argv[i], "--size=", 7) == 0) {
             matrix_size = atoi(argv[i] + 7);
+        } else if (strncmp(argv[i], "--sample=", 9) == 0) {  // Add sample parsing
+            sample_index = atoi(argv[i] + 9);
         } else if (strncmp(argv[i], "--matrix-type=", 14) == 0) {
             MatrixType parsed_type = getMatrixTypeFromName(argv[i] + 14);
             if (parsed_type == static_cast<MatrixType>(-1)) {
@@ -114,19 +129,19 @@ int main(int argc, char **argv) {
 
     // Validate arguments
     if (mode == MODE_NONE) {
-        printf("Error: Must specify a mode (--all, --performance, --error-analysis, --ulp-analysis, --complete, or --assess-resources)\n");
+        printf("Error: Must specify a mode (--all, --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources, or --per-tile)\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES) && strlen(test_name) == 0) {
-        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, complete, and assess-resources modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES || mode == MODE_PER_TILE_ANALYSIS) && strlen(test_name) == 0) {
+        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, complete, assess-resources, and per-tile modes\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES) && matrix_size <= 0) {
-        printf("Error: --size=N is required for performance, error analysis, ULP analysis, complete, and assess-resources modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES || mode == MODE_PER_TILE_ANALYSIS) && matrix_size <= 0) {
+        printf("Error: --size=N is required for performance, error analysis, ULP analysis, complete, assess-resources, and per-tile modes\n");
         printUsage();
         return 1;
     }
@@ -216,6 +231,24 @@ int main(int argc, char **argv) {
             }
 
             assess_kernel_resources(kernel_type, matrix_size);
+            break;
+        }
+
+        case MODE_PER_TILE_ANALYSIS: {  // Add new case
+            printf("\nRunning per-tile reference analysis: %s at size %d, sample %d\n",
+                   test_name, matrix_size, sample_index);
+
+            KernelType kernel_type = getKernelTypeFromName(test_name);
+            if (kernel_type == (KernelType)-1) {
+                printf("Error: Test '%s' not found\n", test_name);
+                return 1;
+            }
+
+            char output_name[128];
+            snprintf(output_name, sizeof(output_name), "per_tile_%s", test_name);
+
+            run_per_tile_reference_analysis(matrix_type, kernel_type, matrix_size,
+                                           sample_index, output_name, true);
             break;
         }
 

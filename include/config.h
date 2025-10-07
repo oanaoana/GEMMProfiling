@@ -125,6 +125,7 @@ typedef enum {
     KERNEL_TILED_OPT,
     KERNEL_TILED_PAIRWISE,
     KERNEL_TILED_RECT,
+    KERNEL_TILED_MIXPREC,           // Add this new kernel type
     KERNEL_CUBLAS,
     KERNEL_CUBLAS_TENSOR,
     KERNEL_CUTLASS,
@@ -270,6 +271,13 @@ inline void compute_kernel_dimensions_template<KERNEL_HELPER_1D>(int n, dim3* th
     *numBlocks = dim3((n + 256 - 1) / 256);
 }
 
+// Add template specialization for mixed precision kernel
+template<>
+inline void compute_kernel_dimensions_template<KERNEL_TILED_MIXPREC>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
+    *numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+}
+
 // Runtime dispatch function that calls the appropriate template specialization
 inline void compute_kernel_dimensions_dispatch(KernelType kernel_type, int n, dim3* threadsPerBlock, dim3* numBlocks) {
     switch(kernel_type) {
@@ -303,6 +311,9 @@ inline void compute_kernel_dimensions_dispatch(KernelType kernel_type, int n, di
         case KERNEL_HELPER_1D:
             compute_kernel_dimensions_template<KERNEL_HELPER_1D>(n, threadsPerBlock, numBlocks);
             break;
+        case KERNEL_TILED_MIXPREC:
+            compute_kernel_dimensions_template<KERNEL_TILED_MIXPREC>(n, threadsPerBlock, numBlocks);
+            break;
         default:
             // Default fallback
             *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
@@ -318,12 +329,20 @@ inline void compute_kernel_dimensions_dispatch_1D(int total_elements, int* threa
     *numBlocks = (total_elements + 256 - 1) / 256;
 }
 
+// Mixed precision configuration struct
+typedef struct {
+    const char* compute_type_name;    // "fp16", "bf16", "tf32", "fp32"
+    const char* accumulate_type_name; // "fp32", "fp64"
+    bool enabled;
+} MixedPrecisionConfig;
+
 // Helper function to convert string name to KernelType enum
 inline KernelType string_to_kernel_type(const char* kernel_name) {
     if (strcmp(kernel_name, "naive") == 0) return KERNEL_NAIVE;
     if (strcmp(kernel_name, "tiled") == 0) return KERNEL_TILED;
     if (strcmp(kernel_name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
     if (strcmp(kernel_name, "tiled_rect") == 0) return KERNEL_TILED_RECT;
+    if (strcmp(kernel_name, "tiled_mixprec") == 0) return KERNEL_TILED_MIXPREC;
     if (strcmp(kernel_name, "cublas") == 0) return KERNEL_CUBLAS;
     if (strcmp(kernel_name, "cublas_tensor") == 0) return KERNEL_CUBLAS_TENSOR;
     if (strcmp(kernel_name, "cutlass") == 0) return KERNEL_CUTLASS;
@@ -347,3 +366,16 @@ inline void compute_dimensions(const char* kernel_name, int n, dim3* threadsPerB
 // Matrix sizes for benchmarking and testing
 extern const int SIZES[];
 extern const int NUM_SIZES;
+
+// ============================================================================
+// MIXED PRECISION CONFIGURATION - Simple compile-time selection
+// ============================================================================
+
+// Set these to experiment with different precision combinations
+#ifndef COMPUTE_TYPE
+#define COMPUTE_TYPE float          // Options: float, __half, __nv_bfloat16
+#endif
+
+#ifndef ACCUMULATE_TYPE
+#define ACCUMULATE_TYPE float       // Options: float, double
+#endif

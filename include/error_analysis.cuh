@@ -30,3 +30,8 @@ void generate_matrix_pair_from_sequence(float* d_A, float* d_B, int n, MatrixTyp
 
 // Function to find the sample index closest to median error from analysis results
 int find_median_sample_index(const float* error_values, int num_samples);
+
+// Add this declaration with your other function declarations
+void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_type,
+                                    int n, int sample_index, const char* output_prefix,
+                                    bool reproducible = true);

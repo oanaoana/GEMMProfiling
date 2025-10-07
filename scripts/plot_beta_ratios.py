@@ -23,7 +23,7 @@ from io import StringIO
 
 # Configure data folder here
 DATA_FOLDER = "data/data9_17"  # Change this to "data" for current data
-OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
+OUTPUT_FORMAT = "eps"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)
 # Available types: '2powers', 'illcond', 'uniform_positive', 'wellcond', 'zeromean'

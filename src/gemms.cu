@@ -869,3 +869,133 @@ void launch_cutlass_splitk_pairwise(float* d_A, float* d_B, float* d_C, int n, d
     cutlass_splitk_pairwise(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
     cudaDeviceSynchronize();
 }
+
+// Revised mixed-precision FMA supporting only the 4 required cases
+template<typename ComputeType, typename AccumType>
+__device__ __forceinline__ AccumType mixprec_fma(ComputeType a, ComputeType b, AccumType c) {
+    // Case 1: Baseline (Standard) - FP32 compute, FP32 accumulate
+    if constexpr (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, float>) {
+        return __fmaf_rn(a, b, c);
+    }
+    // Case 2: Mixed (Tensor Core Emulation) - FP16 compute, FP32 accumulate
+    else if constexpr (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumType, float>) {
+        return __fmaf_rn(__half2float(a), __half2float(b), c);
+    }
+    // Case 3: Mixed (LLM Focus) - BF16 compute, FP32 accumulate
+    else if constexpr (std::is_same_v<ComputeType, __nv_bfloat16> && std::is_same_v<AccumType, float>) {
+        return __fmaf_rn(__bfloat162float(a), __bfloat162float(b), c);
+    }
+    // Case 4: High Accuracy (Double) - FP32 compute, FP64 accumulate
+    else if constexpr (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, double>) {
+        return __fma_rn(static_cast<double>(a), static_cast<double>(b), c);
+    }
+    else {
+        // Static assertion to catch unsupported combinations at compile time
+        static_assert(
+            (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, float>) ||
+            (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumType, float>) ||
+            (std::is_same_v<ComputeType, __nv_bfloat16> && std::is_same_v<AccumType, float>) ||
+            (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, double>),
+            "Unsupported precision combination for mixprec_fma. Only fp32/fp32, fp16/fp32, bf16/fp32, fp32/fp64 are supported."
+        );
+
+        // This should never be reached due to static_assert, but provide fallback
+        return c + static_cast<AccumType>(a) * static_cast<AccumType>(b);
+    }
+}
+
+template <typename ComputeType, typename AccumulateType>
+__global__ void matmul_tiled_mixprec(
+    const AccumulateType* __restrict__ A,
+    const AccumulateType* __restrict__ B,
+    AccumulateType* __restrict__ C,
+    int N)
+{
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    __shared__ ComputeType tile_A[TILE_SIZE][TILE_SIZE];
+    __shared__ ComputeType tile_B[TILE_SIZE][TILE_SIZE];
+
+    AccumulateType sum = static_cast<AccumulateType>(0.0);
+
+    for (int tile = 0; tile < (N + TILE_SIZE - 1) / TILE_SIZE; ++tile) {
+        // Load tile A - convert from AccumulateType to ComputeType
+        int a_row = row;
+        int a_col = tile * TILE_SIZE + threadIdx.x;
+        if (a_row < N && a_col < N) {
+            tile_A[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(A[a_row * N + a_col]);
+        } else {
+            tile_A[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(0.0);
+        }
+
+        // Load tile B - convert from AccumulateType to ComputeType
+        int b_row = tile * TILE_SIZE + threadIdx.y;
+        int b_col = col;
+        if (b_row < N && b_col < N) {
+            tile_B[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(B[b_row * N + b_col]);
+        } else {
+            tile_B[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(0.0);
+        }
+
+        __syncthreads();
+
+        // Compute partial sum using the revised mixprec_fma (supports only 4 cases)
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            sum = mixprec_fma(tile_A[threadIdx.y][k], tile_B[k][threadIdx.x], sum);
+        }
+
+        __syncthreads();
+    }
+
+    if (row < N && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+
+// Launch wrapper - fixed with proper type casting
+void launch_matmul_tiled_mixprec(
+    const float* A, const float* B, float* C, int N,
+    dim3 blocks, dim3 threads, cudaStream_t stream = 0)
+{
+    // Use constexpr if to dispatch based on the configured types
+    if constexpr (std::is_same_v<COMPUTE_TYPE, float> && std::is_same_v<ACCUMULATE_TYPE, float>) {
+        // Case: FP32 compute, FP32 accumulate
+        matmul_tiled_mixprec<float, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
+    }
+    else if constexpr (std::is_same_v<COMPUTE_TYPE, __half> && std::is_same_v<ACCUMULATE_TYPE, float>) {
+        // Case: FP16 compute, FP32 accumulate
+        matmul_tiled_mixprec<__half, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
+    }
+    else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16> && std::is_same_v<ACCUMULATE_TYPE, float>) {
+        // Case: BF16 compute, FP32 accumulate
+        matmul_tiled_mixprec<__nv_bfloat16, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
+    }
+    else if constexpr (std::is_same_v<COMPUTE_TYPE, float> && std::is_same_v<ACCUMULATE_TYPE, double>) {
+        // Case: FP32 compute, FP64 accumulate
+        matmul_tiled_mixprec<float, double><<<blocks, threads, 0, stream>>>(
+            reinterpret_cast<const double*>(A),
+            reinterpret_cast<const double*>(B),
+            reinterpret_cast<double*>(C), N);
+    }
+    else if constexpr (std::is_same_v<COMPUTE_TYPE, __half> && std::is_same_v<ACCUMULATE_TYPE, double>) {
+        // Case: FP16 compute, FP64 accumulate
+        matmul_tiled_mixprec<__half, double><<<blocks, threads, 0, stream>>>(
+            reinterpret_cast<const double*>(A),
+            reinterpret_cast<const double*>(B),
+            reinterpret_cast<double*>(C), N);
+    }
+    else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16> && std::is_same_v<ACCUMULATE_TYPE, double>) {
+        // Case: BF16 compute, FP64 accumulate
+        matmul_tiled_mixprec<__nv_bfloat16, double><<<blocks, threads, 0, stream>>>(
+            reinterpret_cast<const double*>(A),
+            reinterpret_cast<const double*>(B),
+            reinterpret_cast<double*>(C), N);
+    }
+    else {
+        // Fallback - should not reach here with valid types
+        printf("Unsupported precision combination in launch_matmul_tiled_mixprec\n");
+        matmul_tiled_mixprec<float, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
+    }
+}
