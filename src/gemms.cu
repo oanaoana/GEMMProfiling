@@ -713,22 +713,6 @@ void cutlass_splitk_pairwise_template(int M, int N, int K,
     cudaDeviceSynchronize();
 }
 
-// Explicit template instantiations for common slice counts
-template void cutlass_splitk_pairwise_template<8>(int M, int N, int K,
-                                                  const float* dA, int lda,
-                                                  const float* dB, int ldb,
-                                                  float* dC, int ldc);
-
-template void cutlass_splitk_pairwise_template<16>(int M, int N, int K,
-                                                   const float* dA, int lda,
-                                                   const float* dB, int ldb,
-                                                   float* dC, int ldc);
-
-template void cutlass_splitk_pairwise_template<32>(int M, int N, int K,
-                                                   const float* dA, int lda,
-                                                   const float* dB, int ldb,
-                                                   float* dC, int ldc);
-
 // Pairwise split-K GEMM implementation (tree reduction)
 void cutlass_splitk_pairwise(int M, int N, int K,
                              const float* dA, int lda,
@@ -954,48 +938,11 @@ __global__ void matmul_tiled_mixprec(
     }
 }
 
-// Launch wrapper - fixed with proper type casting
-void launch_matmul_tiled_mixprec(
-    const float* A, const float* B, float* C, int N,
-    dim3 blocks, dim3 threads, cudaStream_t stream = 0)
-{
-    // Use constexpr if to dispatch based on the configured types
-    if constexpr (std::is_same_v<COMPUTE_TYPE, float> && std::is_same_v<ACCUMULATE_TYPE, float>) {
-        // Case: FP32 compute, FP32 accumulate
-        matmul_tiled_mixprec<float, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
-    }
-    else if constexpr (std::is_same_v<COMPUTE_TYPE, __half> && std::is_same_v<ACCUMULATE_TYPE, float>) {
-        // Case: FP16 compute, FP32 accumulate
-        matmul_tiled_mixprec<__half, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
-    }
-    else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16> && std::is_same_v<ACCUMULATE_TYPE, float>) {
-        // Case: BF16 compute, FP32 accumulate
-        matmul_tiled_mixprec<__nv_bfloat16, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
-    }
-    else if constexpr (std::is_same_v<COMPUTE_TYPE, float> && std::is_same_v<ACCUMULATE_TYPE, double>) {
-        // Case: FP32 compute, FP64 accumulate
-        matmul_tiled_mixprec<float, double><<<blocks, threads, 0, stream>>>(
-            reinterpret_cast<const double*>(A),
-            reinterpret_cast<const double*>(B),
-            reinterpret_cast<double*>(C), N);
-    }
-    else if constexpr (std::is_same_v<COMPUTE_TYPE, __half> && std::is_same_v<ACCUMULATE_TYPE, double>) {
-        // Case: FP16 compute, FP64 accumulate
-        matmul_tiled_mixprec<__half, double><<<blocks, threads, 0, stream>>>(
-            reinterpret_cast<const double*>(A),
-            reinterpret_cast<const double*>(B),
-            reinterpret_cast<double*>(C), N);
-    }
-    else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16> && std::is_same_v<ACCUMULATE_TYPE, double>) {
-        // Case: BF16 compute, FP64 accumulate
-        matmul_tiled_mixprec<__nv_bfloat16, double><<<blocks, threads, 0, stream>>>(
-            reinterpret_cast<const double*>(A),
-            reinterpret_cast<const double*>(B),
-            reinterpret_cast<double*>(C), N);
-    }
-    else {
-        // Fallback - should not reach here with valid types
-        printf("Unsupported precision combination in launch_matmul_tiled_mixprec\n");
-        matmul_tiled_mixprec<float, float><<<blocks, threads, 0, stream>>>(A, B, C, N);
-    }
+// Then your launch function
+void launch_tiled_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Direct template instantiation - COMPUTE_TYPE and ACCUMULATE_TYPE are replaced at preprocessing
+    matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE><<<blocks, threads>>>(
+        reinterpret_cast<const ACCUMULATE_TYPE*>(d_A),
+        reinterpret_cast<const ACCUMULATE_TYPE*>(d_B),
+        reinterpret_cast<ACCUMULATE_TYPE*>(d_C), n);
 }

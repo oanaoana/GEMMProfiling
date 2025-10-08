@@ -48,20 +48,8 @@ void printUsage() {
     printf("  make fp64_acc && ./main --error-analysis --test=tiled_mixprec --size=1024\n");
 }
 
-inline KernelType getKernelTypeFromName(const char* name) {
-    if (strcmp(name, "naive") == 0) return KERNEL_NAIVE;
-    if (strcmp(name, "tiled") == 0) return KERNEL_TILED;
-    if (strcmp(name, "tiled_opt") == 0) return KERNEL_TILED_OPT;
-    if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
-    if (strcmp(name, "tiled_rect") == 0) return KERNEL_TILED_RECT;
-    if (strcmp(name, "tiled_mixprec") == 0) return KERNEL_TILED_MIXPREC;  // Add this line
-    if (strcmp(name, "cublas") == 0) return KERNEL_CUBLAS;
-    if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
-    // ...existing kernels...
-    return KERNEL_NAIVE;
-}
-
 int main(int argc, char **argv) {
+
     // Handle special debug mode
     if (argc > 1 && strcmp(argv[1], "--debug") == 0) {
         printf("=== Debug Mode ===\n");
@@ -77,7 +65,7 @@ int main(int argc, char **argv) {
         cudaGetDeviceProperties(&prop, 0);
         printf("✓ GPU: %s\n", prop.name);
         printf("✓ Debug test passed\n");
-        return 0;
+        return 0;  // Exit after debug
     }
 
     // Parse arguments
@@ -184,6 +172,14 @@ int main(int argc, char **argv) {
             printf("\nRunning error analysis: %s at size %d\n", test_name, matrix_size);
 
             KernelType kernel_type = getKernelTypeFromName(test_name);
+
+            // Add this validation check:
+            if (kernel_type == (KernelType)-1) {
+                printf("Error: Test '%s' not found\n", test_name);
+                printf("Available tests: naive, tiled, tiled_opt, tiled_pairwise, tiled_rect, tiled_mixprec, cublas, cutlass\n");
+                return 1;
+            }
+
             char output_name[128];
             snprintf(output_name, sizeof(output_name), "error_analysis_%s", test_name);
 

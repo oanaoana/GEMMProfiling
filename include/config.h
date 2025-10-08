@@ -52,7 +52,7 @@
 
 // Multi-sample analysis configuration
 #ifndef DEFAULT_NUM_SAMPLES
-#define DEFAULT_NUM_SAMPLES 80
+#define DEFAULT_NUM_SAMPLES 10
 #endif
 
 // Error analysis reproducibility configuration
@@ -329,13 +329,6 @@ inline void compute_kernel_dimensions_dispatch_1D(int total_elements, int* threa
     *numBlocks = (total_elements + 256 - 1) / 256;
 }
 
-// Mixed precision configuration struct
-typedef struct {
-    const char* compute_type_name;    // "fp16", "bf16", "tf32", "fp32"
-    const char* accumulate_type_name; // "fp32", "fp64"
-    bool enabled;
-} MixedPrecisionConfig;
-
 // Helper function to convert string name to KernelType enum
 inline KernelType string_to_kernel_type(const char* kernel_name) {
     if (strcmp(kernel_name, "naive") == 0) return KERNEL_NAIVE;
@@ -379,3 +372,4 @@ extern const int NUM_SIZES;
 #ifndef ACCUMULATE_TYPE
 #define ACCUMULATE_TYPE float       // Options: float, double
 #endif
+

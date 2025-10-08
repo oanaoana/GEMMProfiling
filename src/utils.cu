@@ -312,6 +312,14 @@ void assess_kernel_resources(KernelType kernel_type, int n) {
             printf("  Cannot retrieve detailed attributes for template kernels\n");
             break;
 
+        case KERNEL_TILED_MIXPREC:
+            printf("  Note: Mixed precision kernel uses compile-time type configuration\n");
+            printf("  Current types: COMPUTE_TYPE=%s, ACCUMULATE_TYPE=%s\n",
+                   // You might want to add type name macros to your config
+                   "configured at build time", "configured at build time");
+            // Can't get attributes for template kernel easily
+            break;
+
         default:
             printf("  Unknown kernel type\n");
             break;
@@ -488,6 +496,7 @@ KernelType getKernelTypeFromName(const char* name) {
     if (strcmp(name, "tiled_opt") == 0) return KERNEL_TILED_OPT;
     if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
     if (strcmp(name, "tiled_rect") == 0) return KERNEL_TILED_RECT;
+    if (strcmp(name, "tiled_mixprec") == 0) return KERNEL_TILED_MIXPREC;  // Add this line
     if (strcmp(name, "cublas") == 0) return KERNEL_CUBLAS;
     if (strcmp(name, "cublas_tensor") == 0) return KERNEL_CUBLAS_TENSOR;
     if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
@@ -519,6 +528,7 @@ const char* kernelTypeToString(KernelType kernel_type) {
         case KERNEL_TILED_OPT: return "tiled_opt";
         case KERNEL_TILED_PAIRWISE: return "tiled_pairwise";
         case KERNEL_TILED_RECT: return "tiled_rect";
+        case KERNEL_TILED_MIXPREC: return "tiled_mixprec";  // Add this line
         case KERNEL_CUBLAS: return "cublas";
         case KERNEL_CUBLAS_TENSOR: return "cublas_tensor";
         case KERNEL_CUTLASS: return "cutlass";
@@ -553,10 +563,11 @@ static KernelFunc kernel_function_table[] = {
     launch_tiled_opt,       // KERNEL_TILED_OPT
     launch_tiled_pairwise,  // KERNEL_TILED_PAIRWISE
     launch_tiled_rect,      // KERNEL_TILED_RECT
+    launch_tiled_mixprec, // KERNEL_TILED_MIXPREC - Add this line
     launch_cublas,          // KERNEL_CUBLAS
     launch_cublas_tensor,   // KERNEL_CUBLAS_TENSOR
-    launch_cutlass,               // KERNEL_CUTLASS
-    launch_cutlass_tensor,        // KERNEL_CUTLASS_TENSOR
+    launch_cutlass,         // KERNEL_CUTLASS
+    launch_cutlass_tensor,  // KERNEL_CUTLASS_TENSOR
     launch_cutlass_splitk_flat,   // KERNEL_CUTLASS_SPLITK_FLAT
     launch_cutlass_splitk_pairwise // KERNEL_CUTLASS_SPLITK_PAIRWISE
 };
