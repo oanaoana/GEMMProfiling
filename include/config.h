@@ -137,17 +137,6 @@ typedef enum {
     NUM_KERNELS
 } KernelType;
 
-// Numerical metrics enumeration
-typedef enum {
-    METRIC_ABSOLUTE_ERROR,
-    METRIC_RELATIVE_ERROR,
-    METRIC_FROBENIUS_NORM,
-    METRIC_CONDITION_NUMBER,
-    METRIC_FORWARD_ERROR,
-    METRIC_BACKWARD_ERROR,
-    METRIC_COUNT  // For iteration
-} MetricType;
-
 // Matrix type enumeration for different matrix generation strategies
 typedef enum {
     MATRIX_ODO_WELL_CONDITIONED,
@@ -167,43 +156,6 @@ typedef enum {
     DIST_NORMAL,        // Normal distribution (mean, std_dev)
     DIST_LOG_NORMAL     // Log-normal distribution
 } DistributionType;
-
-// Matrix type configuration
-typedef struct {
-    MatrixType matrix_type;      // MatrixType enum value
-    const char* name;            // Human-readable name
-    bool enabled;                // Whether this type is enabled
-    float param1, param2;        // Parameters for generation
-} MatrixTypeConfig;
-
-// Kernel type configuration
-typedef struct {
-    KernelType kernel_type;      // KernelType enum value
-    const char* name;            // Human-readable name
-    bool enabled;                // Whether this kernel is enabled
-} KernelTypeConfig;
-
-// Kernel allocation (grid and block dimensions)
-typedef struct {
-    int block_x, block_y;    // Thread block dimensions
-    int grid_x, grid_y;      // Grid dimensions
-    bool use_dynamic_grid;   // Whether to calculate grid size dynamically
-} KernelAllocation;
-
-// Tile configuration
-typedef struct {
-    int tile_size;           // Square tile size
-    int tile_m, tile_n;      // Rectangular tile dimensions
-    int tile_k;              // K dimension for tiling
-} TileConfig;
-
-// Set routines that take user params or defaults
-void set_matrix_config(MatrixTypeConfig* config, MatrixType matrix_type, const char* name,
-                       bool enabled, float param1, float param2);
-void set_kernel_config(KernelTypeConfig* config, KernelType kernel_type, const char* name, bool enabled);
-void set_allocation(KernelAllocation* alloc, int block_x, int block_y,
-                    int grid_x, int grid_y, bool use_dynamic_grid);
-void set_tiles(TileConfig* tiles, int tile_size, int tile_m, int tile_n, int tile_k);
 
 // Keep only the template declaration in config.h:
 template<KernelType kernel_type>
