@@ -15,10 +15,15 @@ SOURCES = $(wildcard src/*.cu)
 HEADERS = $(wildcard include/*.h include/*.cuh)
 TARGET = main
 
+# Precision types
+COMPUTE_TYPE ?= float
+ACCUMULATE_TYPE ?= float
+PRECISION_FLAGS = -DCOMPUTE_TYPE=$(COMPUTE_TYPE) -DACCUMULATE_TYPE=$(ACCUMULATE_TYPE)
+
 # Main build rule
 $(TARGET): $(SOURCES) $(HEADERS)
 	mkdir -p data
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(SOURCES) $(LIBS) -o $@
+	$(CXX) $(CXXFLAGS) $(PRECISION_FLAGS) $(INCLUDES) $(SOURCES) $(LIBS) -o $@
 
 # Clean
 clean:

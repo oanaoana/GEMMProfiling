@@ -7,8 +7,6 @@
 #include <vector_types.h>
 #include <vector>
 
-extern int g_pitch_A;  // Declare extern to access from benchmark.cu
-
 // Naive implementation
 __global__ void matmul_naive(float *A, float *B, float *C, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -241,11 +239,6 @@ __global__ void matmul_tiled_rectangular(float *A, float *B, float *C, int N) {
     }
 }
 
-void launch_tiled_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
-    // Use compile-time constants for fixed tiling
-    matmul_tiled_pairwise<<<blocks, threads>>>(d_A, d_B, d_C, n);
-}
-
 // Launch wrapper for rectangular tiled implementation
 void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Use TILE_M, TILE_N for block dimensions
@@ -331,6 +324,12 @@ __global__ void matmul_tiled_pairwise(const float* __restrict__ A, const float* 
         C[row * N + col] = result;
     }
 }
+
+void launch_tiled_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Use compile-time constants for fixed tiling
+    matmul_tiled_pairwise<<<blocks, threads>>>(d_A, d_B, d_C, n);
+}
+
 // cuBLAS implementation
 void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Create cuBLAS handle
@@ -585,131 +584,10 @@ void cutlass_splitk_flat(int M, int N, int K,
     cudaDeviceSynchronize();
 }
 
-// Template version of cutlass_splitk_pairwise for compile-time slice counts
-template<int SLICES>
-void cutlass_splitk_pairwise_template(int M, int N, int K,
-                                      const float* dA, int lda,
-                                      const float* dB, int ldb,
-                                      float* dC, int ldc) {
-    const int split_k_slices = SLICES;
-
-    // Pre-allocate all temporary memory to avoid allocation overhead
-    std::vector<float*> A_slices(split_k_slices);
-    std::vector<float*> B_slices(split_k_slices);
-    std::vector<float*> C_workspaces(split_k_slices);  // Separate workspaces for each slice
-    std::vector<cudaStream_t> streams(split_k_slices);
-
-    // Calculate slice sizes
-    std::vector<int> k_starts(split_k_slices);
-    std::vector<int> k_sizes(split_k_slices);
-
-    size_t bytesC = size_t(ldc) * size_t(M) * sizeof(float);
-
-    for (int s = 0; s < split_k_slices; s++) {
-        k_starts[s] = (s * K) / split_k_slices;
-        int k_end = ((s + 1) * K) / split_k_slices;
-        k_sizes[s] = k_end - k_starts[s];
-
-        if (k_sizes[s] > 0) {
-            cudaMalloc(&A_slices[s], M * k_sizes[s] * sizeof(float));
-            cudaMalloc(&B_slices[s], k_sizes[s] * N * sizeof(float));
-            cudaMalloc(&C_workspaces[s], bytesC);  // Workspace for this slice
-            cudaMemset(C_workspaces[s], 0, bytesC);  // Zero initialize
-            cudaStreamCreate(&streams[s]);
-        }
-    }
-
-    // Launch all slice preparations in parallel using streams
-    for (int s = 0; s < split_k_slices; s++) {
-        if (k_sizes[s] <= 0) continue;
-
-        int k0 = k_starts[s];
-        int Ks = k_sizes[s];
-
-        // Use 2D memcpy for better performance
-        cudaMemcpy2DAsync(A_slices[s], Ks * sizeof(float),
-                         dA + k0, lda * sizeof(float),
-                         Ks * sizeof(float), M,
-                         cudaMemcpyDeviceToDevice, streams[s]);
-
-        cudaMemcpy2DAsync(B_slices[s], N * sizeof(float),
-                         dB + k0 * ldb, ldb * sizeof(float),
-                         N * sizeof(float), Ks,
-                         cudaMemcpyDeviceToDevice, streams[s]);
-    }
-
-    // Execute GEMM operations into separate workspaces in parallel!
-    using Gemm = cutlass::gemm::device::Gemm<
-        float, cutlass::layout::RowMajor,
-        float, cutlass::layout::RowMajor,
-        float, cutlass::layout::RowMajor,
-        float>;
-
-    std::vector<Gemm> gemm_ops(split_k_slices);
-
-    for (int s = 0; s < split_k_slices; s++) {
-        if (k_sizes[s] <= 0) continue;
-
-        // Wait for this slice's data to be ready
-        cudaStreamSynchronize(streams[s]);
-
-        cutlass::gemm::GemmCoord problem{M, N, k_sizes[s]};
-
-        typename Gemm::Arguments arguments(
-            problem,
-            {A_slices[s], k_sizes[s]},
-            {B_slices[s], N},
-            {C_workspaces[s], ldc},  // Output to workspace (not accumulating)
-            {C_workspaces[s], ldc},
-            {1.0f, 0.0f}             // alpha=1, beta=0 (no accumulation, fresh workspace)
-        );
-
-        auto status = gemm_ops[s].initialize(arguments);
-        if (status == cutlass::Status::kSuccess) {
-            // Launch on the slice's stream for parallelism
-            cudaStream_t stream = streams[s];
-            gemm_ops[s](stream);
-        } else {
-            printf("CUTLASS error in slice %d\n", s);
-        }
-    }
-
-    cudaDeviceSynchronize();
-
-    // Now perform pairwise reduction of workspaces
-    std::vector<float*> work = C_workspaces;  // Copy workspace pointers for reduction
-    int threads = 256;
-    int blocks = (M * N + threads - 1) / threads;
-
-    while (work.size() > 1) {
-        std::vector<float*> next;
-        for (size_t i = 0; i + 1 < work.size(); i += 2) {
-            // Add work[i+1] into work[i] in-place
-            add_inplace_rn<<<blocks, threads>>>(work[i], work[i+1], M, N, ldc);
-            cudaDeviceSynchronize();
-            next.push_back(work[i]);  // Left workspace holds the sum
-        }
-        if (work.size() & 1) {
-            next.push_back(work.back());  // Carry odd one up
-        }
-        work.swap(next);
-    }
-
-    // Copy final result to output
-    cudaMemcpy2D(dC, sizeof(float) * ldc,
-                 work[0], sizeof(float) * ldc,
-                 sizeof(float) * N, M, cudaMemcpyDeviceToDevice);
-
-    // Cleanup
-    for (int s = 0; s < split_k_slices; s++) {
-        if (k_sizes[s] > 0) {
-            cudaFree(A_slices[s]);
-            cudaFree(B_slices[s]);
-            cudaFree(C_workspaces[s]);
-            cudaStreamDestroy(streams[s]);
-        }
-    }
-
+void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    int split_k_slices = SPLIT_K_SLICES;
+    //printf("Running CUTLASS Split-K (flat) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
+    cutlass_splitk_flat(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
     cudaDeviceSynchronize();
 }
 
@@ -839,10 +717,132 @@ void cutlass_splitk_pairwise(int M, int N, int K,
 
     cudaDeviceSynchronize();
 }
-void launch_cutlass_splitk_flat(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
-    int split_k_slices = SPLIT_K_SLICES;
-    //printf("Running CUTLASS Split-K (flat) with %d slices for %dx%d matrix...\n", split_k_slices, n, n);
-    cutlass_splitk_flat(n, n, n, d_A, n, d_B, n, d_C, n, split_k_slices);
+
+// Template version of cutlass_splitk_pairwise for compile-time slice counts
+template<int SLICES>
+void cutlass_splitk_pairwise_template(int M, int N, int K,
+                                      const float* dA, int lda,
+                                      const float* dB, int ldb,
+                                      float* dC, int ldc) {
+    const int split_k_slices = SLICES;
+
+    // Pre-allocate all temporary memory to avoid allocation overhead
+    std::vector<float*> A_slices(split_k_slices);
+    std::vector<float*> B_slices(split_k_slices);
+    std::vector<float*> C_workspaces(split_k_slices);  // Separate workspaces for each slice
+    std::vector<cudaStream_t> streams(split_k_slices);
+
+    // Calculate slice sizes
+    std::vector<int> k_starts(split_k_slices);
+    std::vector<int> k_sizes(split_k_slices);
+
+    size_t bytesC = size_t(ldc) * size_t(M) * sizeof(float);
+
+    for (int s = 0; s < split_k_slices; s++) {
+        k_starts[s] = (s * K) / split_k_slices;
+        int k_end = ((s + 1) * K) / split_k_slices;
+        k_sizes[s] = k_end - k_starts[s];
+
+        if (k_sizes[s] > 0) {
+            cudaMalloc(&A_slices[s], M * k_sizes[s] * sizeof(float));
+            cudaMalloc(&B_slices[s], k_sizes[s] * N * sizeof(float));
+            cudaMalloc(&C_workspaces[s], bytesC);  // Workspace for this slice
+            cudaMemset(C_workspaces[s], 0, bytesC);  // Zero initialize
+            cudaStreamCreate(&streams[s]);
+        }
+    }
+
+    // Launch all slice preparations in parallel using streams
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        int k0 = k_starts[s];
+        int Ks = k_sizes[s];
+
+        // Use 2D memcpy for better performance
+        cudaMemcpy2DAsync(A_slices[s], Ks * sizeof(float),
+                         dA + k0, lda * sizeof(float),
+                         Ks * sizeof(float), M,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+
+        cudaMemcpy2DAsync(B_slices[s], N * sizeof(float),
+                         dB + k0 * ldb, ldb * sizeof(float),
+                         N * sizeof(float), Ks,
+                         cudaMemcpyDeviceToDevice, streams[s]);
+    }
+
+    // Execute GEMM operations into separate workspaces in parallel!
+    using Gemm = cutlass::gemm::device::Gemm<
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float, cutlass::layout::RowMajor,
+        float>;
+
+    std::vector<Gemm> gemm_ops(split_k_slices);
+
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] <= 0) continue;
+
+        // Wait for this slice's data to be ready
+        cudaStreamSynchronize(streams[s]);
+
+        cutlass::gemm::GemmCoord problem{M, N, k_sizes[s]};
+
+        typename Gemm::Arguments arguments(
+            problem,
+            {A_slices[s], k_sizes[s]},
+            {B_slices[s], N},
+            {C_workspaces[s], ldc},  // Output to workspace (not accumulating)
+            {C_workspaces[s], ldc},
+            {1.0f, 0.0f}             // alpha=1, beta=0 (no accumulation, fresh workspace)
+        );
+
+        auto status = gemm_ops[s].initialize(arguments);
+        if (status == cutlass::Status::kSuccess) {
+            // Launch on the slice's stream for parallelism
+            cudaStream_t stream = streams[s];
+            gemm_ops[s](stream);
+        } else {
+            printf("CUTLASS error in slice %d\n", s);
+        }
+    }
+
+    cudaDeviceSynchronize();
+
+    // Now perform pairwise reduction of workspaces
+    std::vector<float*> work = C_workspaces;  // Copy workspace pointers for reduction
+    int threads = 256;
+    int blocks = (M * N + threads - 1) / threads;
+
+    while (work.size() > 1) {
+        std::vector<float*> next;
+        for (size_t i = 0; i + 1 < work.size(); i += 2) {
+            // Add work[i+1] into work[i] in-place
+            add_inplace_rn<<<blocks, threads>>>(work[i], work[i+1], M, N, ldc);
+            cudaDeviceSynchronize();
+            next.push_back(work[i]);  // Left workspace holds the sum
+        }
+        if (work.size() & 1) {
+            next.push_back(work.back());  // Carry odd one up
+        }
+        work.swap(next);
+    }
+
+    // Copy final result to output
+    cudaMemcpy2D(dC, sizeof(float) * ldc,
+                 work[0], sizeof(float) * ldc,
+                 sizeof(float) * N, M, cudaMemcpyDeviceToDevice);
+
+    // Cleanup
+    for (int s = 0; s < split_k_slices; s++) {
+        if (k_sizes[s] > 0) {
+            cudaFree(A_slices[s]);
+            cudaFree(B_slices[s]);
+            cudaFree(C_workspaces[s]);
+            cudaStreamDestroy(streams[s]);
+        }
+    }
+
     cudaDeviceSynchronize();
 }
 
@@ -942,6 +942,113 @@ __global__ void matmul_tiled_mixprec(
 void launch_tiled_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
     // Direct template instantiation - COMPUTE_TYPE and ACCUMULATE_TYPE are replaced at preprocessing
     matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE><<<blocks, threads>>>(
+        reinterpret_cast<const ACCUMULATE_TYPE*>(d_A),
+        reinterpret_cast<const ACCUMULATE_TYPE*>(d_B),
+        reinterpret_cast<ACCUMULATE_TYPE*>(d_C), n);
+}
+
+// Zero literal helpers for both float/double (and others via cast)
+template <typename T>
+__device__ __forceinline__ T zlit() { return static_cast<T>(0.0); }
+
+// ---------- Utility ----------
+
+__device__ __forceinline__ int ceil_div_int(int a, int b) { return (a + b - 1) / b; }
+
+// Compute ceil(log2(x)) for x>=1; returns 0 for x==0 (never used here).
+__device__ __forceinline__ int ceil_log2_int_gpu(int x) {
+    if (x <= 1) return 0;
+    return 32 - __clz(x - 1);
+}
+
+template <typename ComputeType, typename AccumulateType>
+__global__ void matmul_tiled_pairwise_mixprec(
+    const AccumulateType* __restrict__ A,    // stored as AccumulateType (same as your mixed kernel)
+    const AccumulateType* __restrict__ B,
+    AccumulateType* __restrict__ C,
+    int N)
+{
+    // Thread / block indices
+    const int tx = threadIdx.x, ty = threadIdx.y;
+    const int bx = blockIdx.x,  by = blockIdx.y;
+
+    // Global output indices for this thread
+    const int row = by * TILE_SIZE + ty;
+    const int col = bx * TILE_SIZE + tx;
+
+    // Shared memory tiles with bank-conflict padding (+1 on the inner dimension)
+    __shared__ ComputeType tile_A[TILE_SIZE][TILE_SIZE + 1];
+    __shared__ ComputeType tile_B[TILE_SIZE][TILE_SIZE + 1];
+
+    const int num_tiles = ceil_div_int(N, TILE_SIZE);
+
+    // --- ONLINE PAIRWISE STACK (per thread) ---
+    AccumulateType level_acc[MAX_LEVELS];
+    #pragma unroll
+    for (int l = 0; l < MAX_LEVELS; ++l) level_acc[l] = zlit<AccumulateType>();
+    unsigned int occ_mask = 0u; // bit l set ⇒ level l occupied
+
+    // Main loop over K-tiles
+    for (int t = 0; t < num_tiles; ++t) {
+        // Load A tile (row-major), converting from AccumulateType to ComputeType
+        const int A_row = row;
+        const int A_col = t * TILE_SIZE + tx;
+        tile_A[ty][tx] =
+            (A_row < N && A_col < N)
+            ? static_cast<ComputeType>(A[A_row * N + A_col])
+            : zlit<ComputeType>();
+
+        // Load B tile (row-major), converting to ComputeType
+        const int B_row = t * TILE_SIZE + ty;
+        const int B_col = col;
+        tile_B[ty][tx] =
+            (B_row < N && B_col < N)
+            ? static_cast<ComputeType>(B[B_row * N + B_col])
+            : zlit<ComputeType>();
+
+        __syncthreads();
+
+        // --- compute the partial for this K-tile (depth = TILE_SIZE) in ComputeType, accumulated in AccumulateType ---
+        AccumulateType p = zlit<AccumulateType>();
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            p = mixprec_fma(tile_A[ty][k], tile_B[k][tx], p);
+        }
+
+        __syncthreads(); // safe to reuse shared tiles next iteration
+
+        // --- ONLINE PAIRWISE INSERT of partial p (binary counter) ---
+        int l = 0;
+        // Optional: early bound to prevent overflow (num_tiles may exceed MAX_LEVELS coverage)
+        // Needed levels ≤ ceil_log2(num_tiles) + 1.
+        // We keep the original "carry" pattern and cap at MAX_LEVELS-1.
+        while ((occ_mask & (1u << l)) != 0u) {
+            p = static_cast<AccumulateType>(p + level_acc[l]);
+            occ_mask &= ~(1u << l);
+            ++l;
+            if (l >= MAX_LEVELS - 1) break; // cap carry chain
+        }
+        level_acc[l] = p;
+        occ_mask |= (1u << l);
+    }
+
+    // Final fold of occupied levels
+    AccumulateType result = zlit<AccumulateType>();
+    #pragma unroll
+    for (int l = 0; l < MAX_LEVELS; ++l) {
+        if (occ_mask & (1u << l)) result = static_cast<AccumulateType>(result + level_acc[l]);
+    }
+
+    // Write-back
+    if (row < N && col < N) {
+        C[row * N + col] = result;
+    }
+}
+
+// Launch wrapper for tiled pairwise mixed precision
+void launch_tiled_pairwise_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    // Direct template instantiation using the configured types
+    matmul_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE><<<blocks, threads>>>(
         reinterpret_cast<const ACCUMULATE_TYPE*>(d_A),
         reinterpret_cast<const ACCUMULATE_TYPE*>(d_B),
         reinterpret_cast<ACCUMULATE_TYPE*>(d_C), n);

@@ -40,4 +40,13 @@ MatrixType getMatrixTypeFromName(const char* name);
 const char* kernelTypeToString(KernelType kernel_type);
 const char* matrixTypeToString(MatrixType matrix_type);
 
+// For kernel launch and dimension computation
+template<KernelType kernel_type>
+void compute_kernel_dimensions_template(int n, dim3* threadsPerBlock, dim3* numBlocks);
+
+void compute_kernel_dimensions_dispatch(KernelType kernel_type, int n, dim3* threadsPerBlock, dim3* numBlocks);
+void compute_kernel_dimensions_dispatch_1D(int n, int* threadsPerBlock, int* numBlocks);
+
+void compute_dimensions(const char* kernel_name, int n, dim3* threadsPerBlock, dim3* numBlocks);
+
 #endif // UTILS_CUH

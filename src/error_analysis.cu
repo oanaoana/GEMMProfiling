@@ -161,111 +161,148 @@ inline double gamma(int n, double u) {
     return nu / (1.0 - nu);
 }
 
-// inline int ceil_log2_int(int x) {
-//     int p = 0, v = x - 1;
-//     while (v > 0) { v >>= 1; ++p; }
-//     return p;
-// }
-
 __host__ __device__ inline int ceil_log2_int(int x) {
     return (x <= 1) ? 0 : 32 - __builtin_clz(x - 1);
 }
 
 __host__ __device__ inline int ceil_div(int a, int b) { return (a + b - 1) / b; }
 
-// Compute theoretical error bound factor based on kernel type and matrix size
-float compute_beta_factor(KernelType kernel_type, int K) {
-    const double u = unit_roundoff_fp32(); // Use precision from config
+// γ_k(u) helper with guard (valid if k*u < 1)
+__host__ __device__ inline double gamma_bound(int k_eff, double u) {
+    if (k_eff <= 0) return 0.0;
+    // guard against ku >= 1 (use a soft clamp to stay within model domain)
+    const double ku = k_eff * u;
+    const double eps = 1e-12;
+    if (ku >= 1.0 - 1e-9) {
+        const double ku_clamped = fmin(ku, 1.0 - 1e-9);
+        return ku_clamped / fmax(1.0 - ku_clamped, eps);
+    }
+    return ku / (1.0 - ku);
+}
+
+// Depth helpers. We treat "k_eff" as the reduction depth (≈ #adds) like d(k) in the paper.
+// For flat we keep your existing convention (tile_inner_k, L); for pairwise we use ceil(log2).
+__host__ __device__ inline int depth_flat(int count) { return max(count, 1); }
+__host__ __device__ inline int depth_pairwise(int count) {
+    return (count <= 1) ? 1 : ceil_log2_int(count);
+}
+
+// Add helper functions to get unit roundoff for different types
+inline double unit_roundoff_from_type() {
+    // Use the configured types from config.h
+    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
+        return unit_roundoff_fp32();
+    } else if constexpr (std::is_same_v<COMPUTE_TYPE, __half>) {
+        return unit_roundoff_fp16();
+    } else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16>) {
+        return unit_roundoff_bf16();
+    } else {
+        return unit_roundoff_fp32(); // fallback
+    }
+}
+
+inline double unit_roundoff_accumulate_type() {
+    if constexpr (std::is_same_v<ACCUMULATE_TYPE, float>) {
+        return unit_roundoff_fp32();
+    } else if constexpr (std::is_same_v<ACCUMULATE_TYPE, double>) {
+        return unit_roundoff_fp64();
+    } else {
+        return unit_roundoff_fp32(); // fallback
+    }
+}
+
+// New signature: take compute precision (u_c) and accumulate precision (u_a).
+// Optionally include the cross-term; if false you'll get the first-order sum.
+// If uc==ua and you want the condensed form, set collapse_same_u=true.
+float compute_beta_factor(KernelType kernel_type, int K)
+{
+    // Get unit roundoffs for compute and accumulate types
+    const double u_c = unit_roundoff_from_type();
+    const double u_a = unit_roundoff_accumulate_type();
+
+    // Use configuration flags from config.h
+    const bool include_cross_term = INCLUDE_CROSS_TERMS;
+    const bool collapse_same_u = COLLAPSE_SAME_PRECISION;
 
     // Defaults to avoid UB
-    int  L            = 1;      // inter count (tiles or slices)
+    int  L            = 1;      // number of inter (tiles/slices) to combine
     int  tile_inner_k = 1;      // intra depth (K inside a tile/slice)
-    bool pairwise     = false;
+    bool inter_pairwise = false;
+    bool intra_pairwise = false; // keep hook if you later add pairwise *within* tiles
 
     switch (kernel_type) {
-        case KERNEL_TILED: {                    // your own tiled kernel, FLAT across tiles
+        case KERNEL_TILED: {
             L            = ceil_div(K, TILE_SIZE);
             tile_inner_k = TILE_SIZE;
-            pairwise     = false;
+            inter_pairwise = false;
             break;
         }
-        case KERNEL_TILED_PAIRWISE: {           // your tiled, PAIRWISE across tiles
+        case KERNEL_TILED_PAIRWISE: {
             L            = ceil_div(K, TILE_SIZE);
             tile_inner_k = TILE_SIZE;
-            pairwise     = true;
+            inter_pairwise = true;   // pairwise across tiles
             break;
         }
-        case KERNEL_CUTLASS_SPLITK_FLAT: {      // split-K, FLAT across S slices
+        case KERNEL_CUTLASS_SPLITK_FLAT: {
             const int S  = SPLIT_K_SLICES;
-            L            = S;
-            tile_inner_k = ceil_div(K, S);      // per-slice depth
-            pairwise     = false;
+            L            = S;                        // inter = slices
+            tile_inner_k = ceil_div(K, S);          // intra depth per slice
+            inter_pairwise = false;
             break;
         }
-        case KERNEL_CUTLASS_SPLITK_PAIRWISE: {  // split-K, PAIRWISE across S slices
+        case KERNEL_CUTLASS_SPLITK_PAIRWISE: {
             const int S  = SPLIT_K_SLICES;
             L            = S;
             tile_inner_k = ceil_div(K, S);
-            pairwise     = true;
+            inter_pairwise = true;                  // pairwise across slices
             break;
         }
-        case KERNEL_CUBLAS: {                   // model cuBLAS as flat across tiles
-            // If you prefer, define CUBLAS_TILE_K separately; else reuse TILE_SIZE.
-            const int TILE_K_BLAS = TILE_SIZE;
+        case KERNEL_CUBLAS: {
+            const int TILE_K_BLAS = TILE_SIZE;      // or a dedicated constant
             L            = ceil_div(K, TILE_K_BLAS);
             tile_inner_k = TILE_K_BLAS;
-            pairwise     = false;
+            inter_pairwise = false;
+            break;
+        }
+         case KERNEL_TILED_MIXPREC: {                // Mixed precision tiled kernel
+            L            = ceil_div(K, TILE_SIZE);
+            tile_inner_k = TILE_SIZE;
+            inter_pairwise     = false;
             break;
         }
         default: {
-            // Fallback: behave like a flat tiled kernel
             L            = ceil_div(K, TILE_SIZE);
             tile_inner_k = TILE_SIZE;
-            pairwise     = false;
+            inter_pairwise = false;
             break;
         }
     }
 
-    // Stage 1: within tile/slice (always present, even for flat)
-    const double beta_inner = gamma(tile_inner_k, u);
+    // Map to reduction depths d(b_k) and d(s)
+    const int d_intra = intra_pairwise
+                        ? depth_pairwise(tile_inner_k)
+                        : depth_flat(tile_inner_k);
 
-    // Stage 2: across tiles/slices
-    const int outer_eff     = pairwise ? ceil_log2_int(L) : L;
-    const double beta_outer = gamma(outer_eff, u);
+    const int d_inter = inter_pairwise
+                        ? depth_pairwise(L)
+                        : depth_flat(L);
 
-    // First-order composition (cross-terms are O(u^2))
-    return (float)(beta_inner + beta_outer);
+    // Stage 1 (within tile/slice) uses u_c; Stage 2 (across tiles/slices) uses u_a
+    const double beta_inner = gamma_bound(d_intra, u_c);
+    const double beta_outer = gamma_bound(d_inter, u_a);
 
-    // int L, tile_inner_k;
-    // bool pairwise = false;
-    // // For tiled kernels: two-stage accumulation
-    // switch (kernel_type) {
-    //     case KERNEL_TILED_PAIRWISE:
-    //         L = (n + TILE_SIZE - 1) / TILE_SIZE;
-    //         tile_inner_k = TILE_SIZE; // Inner loop accumulation size
-    //         pairwise = true;
-    //     case KERNEL_CUTLASS_SPLITK_PAIRWISE:
-    //         L = SPLIT_K_SLICES;
-    //         tile_inner_k = n/SPLIT_K_SLICES; // Inner loop accumulation size
-    //         pairwise = true;
-    // }
+    if (collapse_same_u && fabs(u_c - u_a) < 1e-20) {
+        // Use composition (1+γ_a)(1+γ_b)-1 <= γ_{a+b} when uc == ua
+        const int d_total = d_intra + d_inter;
+        return (float)gamma_bound(d_total, u_c);
+    }
 
-    // // Stage 1: Accumulation within each tile (size TILE_SIZE)
-    // double beta_inner = gamma(tile_inner_k, u);
+    // Theorem 3.5 form: intra + inter + cross (cross is O(u^2), optional)
+    const double beta = include_cross_term
+                        ? (beta_inner + beta_outer + beta_inner * beta_outer)
+                        : (beta_inner + beta_outer);
 
-    // // Stage 2: Accumulation across tiles
-    // double beta_outer;
-
-    // if (pairwise) {
-    //     // Pairwise summation has logarithmic error growth
-    //     beta_outer = gamma(ceil_log2_int(L), u);
-    // } else {
-    //     // Standard summation has linear error growth
-    //     beta_outer = gamma(L, u);
-    // }
-
-    // // Total error bound: inner + outer (conservative, cross-terms are O(u^2))
-    // return (float)(beta_inner + beta_outer);
+    return (float)beta;
 }
 
 // Integer ULP distance between two FP32 values.

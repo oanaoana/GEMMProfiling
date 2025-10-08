@@ -496,7 +496,8 @@ KernelType getKernelTypeFromName(const char* name) {
     if (strcmp(name, "tiled_opt") == 0) return KERNEL_TILED_OPT;
     if (strcmp(name, "tiled_pairwise") == 0) return KERNEL_TILED_PAIRWISE;
     if (strcmp(name, "tiled_rect") == 0) return KERNEL_TILED_RECT;
-    if (strcmp(name, "tiled_mixprec") == 0) return KERNEL_TILED_MIXPREC;  // Add this line
+    if (strcmp(name, "tiled_mixprec") == 0) return KERNEL_TILED_MIXPREC;
+    if (strcmp(name, "tiled_pairwise_mixprec") == 0) return KERNEL_TILED_PAIRWISE_MIXPREC;
     if (strcmp(name, "cublas") == 0) return KERNEL_CUBLAS;
     if (strcmp(name, "cublas_tensor") == 0) return KERNEL_CUBLAS_TENSOR;
     if (strcmp(name, "cutlass") == 0) return KERNEL_CUTLASS;
@@ -528,7 +529,8 @@ const char* kernelTypeToString(KernelType kernel_type) {
         case KERNEL_TILED_OPT: return "tiled_opt";
         case KERNEL_TILED_PAIRWISE: return "tiled_pairwise";
         case KERNEL_TILED_RECT: return "tiled_rect";
-        case KERNEL_TILED_MIXPREC: return "tiled_mixprec";  // Add this line
+        case KERNEL_TILED_MIXPREC: return "tiled_mixprec";
+        case KERNEL_TILED_PAIRWISE_MIXPREC: return "tiled_pairwise_mixprec";  // Add this
         case KERNEL_CUBLAS: return "cublas";
         case KERNEL_CUBLAS_TENSOR: return "cublas_tensor";
         case KERNEL_CUTLASS: return "cutlass";
@@ -558,18 +560,19 @@ const char* matrixTypeToString(MatrixType matrix_type) {
 typedef void (*KernelFunc)(float*, float*, float*, int, dim3, dim3);
 
 static KernelFunc kernel_function_table[] = {
-    launch_naive,           // KERNEL_NAIVE
-    launch_tiled,           // KERNEL_TILED
-    launch_tiled_opt,       // KERNEL_TILED_OPT
-    launch_tiled_pairwise,  // KERNEL_TILED_PAIRWISE
-    launch_tiled_rect,      // KERNEL_TILED_RECT
-    launch_tiled_mixprec, // KERNEL_TILED_MIXPREC - Add this line
-    launch_cublas,          // KERNEL_CUBLAS
-    launch_cublas_tensor,   // KERNEL_CUBLAS_TENSOR
-    launch_cutlass,         // KERNEL_CUTLASS
-    launch_cutlass_tensor,  // KERNEL_CUTLASS_TENSOR
-    launch_cutlass_splitk_flat,   // KERNEL_CUTLASS_SPLITK_FLAT
-    launch_cutlass_splitk_pairwise // KERNEL_CUTLASS_SPLITK_PAIRWISE
+    launch_naive,                           // KERNEL_NAIVE
+    launch_tiled,                          // KERNEL_TILED
+    launch_tiled_opt,                      // KERNEL_TILED_OPT
+    launch_tiled_pairwise,                 // KERNEL_TILED_PAIRWISE
+    launch_tiled_rect,                     // KERNEL_TILED_RECT
+    launch_tiled_mixprec,           // KERNEL_TILED_MIXPREC
+    launch_tiled_pairwise_mixprec,  // KERNEL_TILED_PAIRWISE_MIXPREC - Add this
+    launch_cublas,                         // KERNEL_CUBLAS
+    launch_cublas_tensor,                  // KERNEL_CUBLAS_TENSOR
+    launch_cutlass,                        // KERNEL_CUTLASS
+    launch_cutlass_tensor,                 // KERNEL_CUTLASS_TENSOR
+    launch_cutlass_splitk_flat,            // KERNEL_CUTLASS_SPLITK_FLAT
+    launch_cutlass_splitk_pairwise         // KERNEL_CUTLASS_SPLITK_PAIRWISE
 };
 
 void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
@@ -581,4 +584,146 @@ void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float
 
     // Direct function pointer call - zero overhead dispatch!
     kernel_function_table[kernel_type](d_A, d_B, d_C, n, blocks, threads);
+}
+
+// Template-based kernel dimension computation for compile-time efficiency
+template<KernelType kernel_type>
+void compute_kernel_dimensions_template(int n, dim3* threadsPerBlock, dim3* numBlocks);
+
+// Template specializations for each kernel type
+template<>
+void compute_kernel_dimensions_template<KERNEL_NAIVE>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_TILED>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
+    *numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_TILED_RECT>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(BLOCK_N, BLOCK_M);
+    *numBlocks = dim3((n + TILE_N - 1) / TILE_N, (n + TILE_M - 1) / TILE_M);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_CUBLAS>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_CUBLAS_TENSOR>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_CUTLASS>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_CUTLASS_TENSOR>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_CUTLASS_SPLITK_FLAT>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    // Use standard 2D configuration for split-K flat implementation
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_CUTLASS_SPLITK_PAIRWISE>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    // Use standard 2D configuration for split-K pairwise implementation
+    *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+    *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_HELPER_1D>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    // Compute total elements from matrix dimension (like other kernels)
+    const int total_elements = n * n;
+
+    *threadsPerBlock = dim3(256);
+    *numBlocks = dim3((total_elements + 256 - 1) / 256);
+}
+
+// Add template specialization for mixed precision kernel
+template<>
+void compute_kernel_dimensions_template<KERNEL_TILED_MIXPREC>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
+    *numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+}
+
+template<>
+void compute_kernel_dimensions_template<KERNEL_TILED_PAIRWISE_MIXPREC>(int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    *threadsPerBlock = dim3(TILE_SIZE, TILE_SIZE);
+    *numBlocks = dim3((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
+}
+
+// Runtime dispatch function that calls the appropriate template specialization
+void compute_kernel_dimensions_dispatch(KernelType kernel_type, int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    switch(kernel_type) {
+        case KERNEL_NAIVE:
+            compute_kernel_dimensions_template<KERNEL_NAIVE>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_TILED:
+            compute_kernel_dimensions_template<KERNEL_TILED>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_TILED_RECT:
+            compute_kernel_dimensions_template<KERNEL_TILED_RECT>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_CUBLAS:
+            compute_kernel_dimensions_template<KERNEL_CUBLAS>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_CUBLAS_TENSOR:
+            compute_kernel_dimensions_template<KERNEL_CUBLAS_TENSOR>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_CUTLASS:
+            compute_kernel_dimensions_template<KERNEL_CUTLASS>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_CUTLASS_TENSOR:
+            compute_kernel_dimensions_template<KERNEL_CUTLASS_TENSOR>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_CUTLASS_SPLITK_FLAT:
+            compute_kernel_dimensions_template<KERNEL_CUTLASS_SPLITK_FLAT>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_CUTLASS_SPLITK_PAIRWISE:
+            compute_kernel_dimensions_template<KERNEL_CUTLASS_SPLITK_PAIRWISE>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_HELPER_1D:
+            compute_kernel_dimensions_template<KERNEL_HELPER_1D>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_TILED_MIXPREC:
+            compute_kernel_dimensions_template<KERNEL_TILED_MIXPREC>(n, threadsPerBlock, numBlocks);
+            break;
+        case KERNEL_TILED_PAIRWISE_MIXPREC:
+            compute_kernel_dimensions_template<KERNEL_TILED_PAIRWISE_MIXPREC>(n, threadsPerBlock, numBlocks);
+            break;
+        default:
+            // Default fallback
+            *threadsPerBlock = dim3(BLOCK_SIZE, BLOCK_SIZE);
+            *numBlocks = dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+            break;
+    }
+}
+
+// 1D kernel dimension dispatch function for helper kernels
+void compute_kernel_dimensions_dispatch_1D(int total_elements, int* threadsPerBlock, int* numBlocks) {
+    // Standard 1D configuration for element-wise operations
+    *threadsPerBlock = 256;  // Optimal block size for most GPUs
+    *numBlocks = (total_elements + 256 - 1) / 256;
+}
+// Efficient string-based wrapper that uses templates internally
+void compute_dimensions(const char* kernel_name, int n, dim3* threadsPerBlock, dim3* numBlocks) {
+    KernelType kernel_type = getKernelTypeFromName(kernel_name);
+    compute_kernel_dimensions_dispatch(kernel_type, n, threadsPerBlock, numBlocks);
 }

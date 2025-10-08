@@ -25,6 +25,7 @@ void launch_tiled_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 block
 void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled_rectangular(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+void launch_tiled_pairwise_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 
 // cuBLAS wrappers - need to be adapted to consistent signature
 void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
