@@ -78,43 +78,6 @@
 #endif
 
 // ============================================================================
-// PRECISION AND UNIT ROUNDOFF CONSTANTS
-// ============================================================================
-// Unit roundoff values for different floating-point precisions
-// These are used for error analysis and theoretical error bound computations
-
-// IEEE 754 single precision (FP32): 24-bit mantissa
-inline double unit_roundoff_fp32() { return ldexp(1.0, -24); }
-
-// IEEE 754 double precision (FP64): 53-bit mantissa
-inline double unit_roundoff_fp64() { return ldexp(1.0, -53); }
-
-// NVIDIA TensorFloat-32 (TF32): 11-bit mantissa (10 explicit + 1 implicit)
-inline double unit_roundoff_tf32() { return ldexp(1.0, -10); }
-
-// Brain Float 16 (BF16): 8-bit mantissa (7 explicit + 1 implicit)
-inline double unit_roundoff_bf16() { return ldexp(1.0, -8); }
-
-// IEEE 754 half precision (FP16): 11-bit mantissa (10 explicit + 1 implicit)
-inline double unit_roundoff_fp16() { return ldexp(1.0, -10); }
-
-// Template-based unit roundoff selection for future templated kernels
-template<typename T>
-inline double get_unit_roundoff() {
-    if constexpr (std::is_same_v<T, float>) {
-        return unit_roundoff_fp32();
-    } else if constexpr (std::is_same_v<T, double>) {
-        return unit_roundoff_fp64();
-    } else if constexpr (std::is_same_v<T, half>) {
-        return unit_roundoff_fp16();
-    } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
-        return unit_roundoff_bf16();
-    } else {
-        return unit_roundoff_fp32(); // Default fallback
-    }
-}
-
-// ============================================================================
 // TYPE DEFINITIONS AND STRUCTS
 // ============================================================================
 
@@ -204,4 +167,21 @@ extern const int NUM_SIZES;
 #define ERROR_SEED 42
 #endif
 
+// ============================================================================
+// PRECISION AND UNIT ROUNDOFF CONSTANTS - DECLARATIONS
+// ============================================================================
 
+// Unit roundoff function declarations
+double unit_roundoff_fp32();
+double unit_roundoff_fp64();
+double unit_roundoff_tf32();
+double unit_roundoff_bf16();
+double unit_roundoff_fp16();
+
+// Template function declaration only
+template<typename T>
+double get_unit_roundoff();
+
+// Helper functions for configured types
+double unit_roundoff_from_type();
+double unit_roundoff_accumulate_type();

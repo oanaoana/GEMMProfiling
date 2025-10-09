@@ -187,30 +187,6 @@ __host__ __device__ inline int depth_pairwise(int count) {
     return (count <= 1) ? 1 : ceil_log2_int(count);
 }
 
-// Add helper functions to get unit roundoff for different types
-inline double unit_roundoff_from_type() {
-    // Use the configured types from config.h
-    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
-        return unit_roundoff_fp32();
-    } else if constexpr (std::is_same_v<COMPUTE_TYPE, __half>) {
-        return unit_roundoff_fp16();
-    } else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16>) {
-        return unit_roundoff_bf16();
-    } else {
-        return unit_roundoff_fp32(); // fallback
-    }
-}
-
-inline double unit_roundoff_accumulate_type() {
-    if constexpr (std::is_same_v<ACCUMULATE_TYPE, float>) {
-        return unit_roundoff_fp32();
-    } else if constexpr (std::is_same_v<ACCUMULATE_TYPE, double>) {
-        return unit_roundoff_fp64();
-    } else {
-        return unit_roundoff_fp32(); // fallback
-    }
-}
-
 // New signature: take compute precision (u_c) and accumulate precision (u_a).
 // Optionally include the cross-term; if false you'll get the first-order sum.
 // If uc==ua and you want the condensed form, set collapse_same_u=true.
