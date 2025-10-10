@@ -7,13 +7,6 @@
 #include <cublas_v2.h>
 #include <math.h>
 
-
-// Define available tests using unified kernel types
-const char* available_test_names[NUM_TESTS] = {
-    "naive", "tiled", "tiled_opt", "tiled_pairwise",
-    "tiled_rect", "cublas", "cublas_tensor", "cutlass", ""
-};
-
 // Generic occupancy checker for any kernel
 void check_kernel_occupancy(void* kernel_func, const char* kernel_name,
                            int threads_per_block, size_t shared_mem_bytes) {
@@ -251,82 +244,6 @@ void runBenchmark(int n, KernelType kernel_type,
     cudaEventDestroy(stop);
 }
 
-// Main benchmark function
-void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes) {
-
-    printf("=== Starting Benchmarks ===\n");
-
-    FILE* dataFile = fopen("data/roofline_data.csv", "w");
-    if (!dataFile) {
-        printf("ERROR: Could not create data/roofline_data.csv\n");
-        return;
-    }
-    fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
-
-    for (int i = 0; i < NUM_SIZES; i++) {
-        if (!enabled_sizes[i]) continue;
-
-        int n = SIZES[i];
-        printf("\n--- Testing matrix size %d x %d ---\n", n, n);
-
-        // Allocate memory
-        size_t size = n * n * sizeof(float);
-
-        float *h_A = (float*)malloc(size);
-        float *h_B = (float*)malloc(size);
-        float *h_C = (float*)malloc(size);
-
-        if (!h_A || !h_B || !h_C) {
-            printf("ERROR: Failed to allocate host memory\n");
-            return;
-        }
-
-        fill_matrix(h_A, n);
-        fill_matrix(h_B, n);
-
-        float *d_A, *d_B, *d_C;
-
-        cudaMalloc((void**)&d_A, n * n * sizeof(float));
-        cudaMalloc((void**)&d_B, n * n * sizeof(float));
-        cudaMalloc((void**)&d_C, n * n * sizeof(float));
-
-        //cudaMemcpy2D(d_A, pitch_A, h_A, n * sizeof(float), n * sizeof(float), n, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
-
-        // Run each enabled test
-        for (int j = 0; j < NUM_TESTS; j++) {
-            if (!enabled_tests[j]) continue;
-            if (strlen(available_test_names[j]) == 0) continue; // Skip empty names
-
-            printf("\n===== %s =====\n", available_test_names[j]);
-
-            // Do the lookup ONCE before timing-critical code
-            KernelType kernel_type = getKernelTypeFromName(available_test_names[j]);
-            if (kernel_type == static_cast<KernelType>(-1)) {
-                printf("Error: Unknown kernel type for '%s'\n", available_test_names[j]);
-                continue;
-            }
-
-            runBenchmark(n, kernel_type,
-                         h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
-
-            // Verification removed - use --error-analysis for accuracy testing
-        }
-
-        // Free memory (now in correct scope)
-        cudaFree(d_A);
-        cudaFree(d_B);
-        cudaFree(d_C);
-        free(h_A);
-        free(h_B);
-        free(h_C);
-    }
-
-    fclose(dataFile);
-    printf("\nBenchmark complete. Results saved to data/roofline_data.csv\n");
-}
-
 void initialize_benchmark_matrices(float* h_A, float* h_B, float* h_C, int n) {
     fill_matrix(h_A, n);          // Random values for A
     fill_matrix(h_B, n);          // Random values for B
@@ -337,18 +254,22 @@ void initialize_benchmark_matrices(float* h_A, float* h_B, float* h_C, int n) {
 }
 
 // Kernel-based benchmark function - takes KernelType directly
-void runKernelBenchmark(KernelType kernel_type, int n) {
+void runKernelPerformance(KernelType kernel_type, int n) {
     const char* kernel_name = kernelTypeToString(kernel_type);
 
-    printf("=== Kernel Benchmark Test ===\n");
+    printf("=== Kernel Performance Test ===\n");
     printf("Kernel: %s, Size: %dx%d\n", kernel_name, n, n);
+    printf("Using COMPUTE_TYPE: %s (%zu bytes per element)\n",
+           (sizeof(COMPUTE_TYPE) == 4) ? "float" :
+           (sizeof(COMPUTE_TYPE) == 2) ? "half/bf16" : "unknown",
+           sizeof(COMPUTE_TYPE));
 
-    // Allocate memory
-    size_t size = n * n * sizeof(float);
-    float *h_A = (float*)malloc(size);
-    float *h_B = (float*)malloc(size);
-    float *h_C = (float*)malloc(size);
-    float *d_A, *d_B, *d_C;
+    // Allocate memory based on COMPUTE_TYPE
+    size_t size = n * n * sizeof(COMPUTE_TYPE);
+    COMPUTE_TYPE *h_A = (COMPUTE_TYPE*)malloc(size);
+    COMPUTE_TYPE *h_B = (COMPUTE_TYPE*)malloc(size);
+    COMPUTE_TYPE *h_C = (COMPUTE_TYPE*)malloc(size);
+    COMPUTE_TYPE *d_A, *d_B, *d_C;
 
     if (!h_A || !h_B || !h_C) {
         printf("ERROR: Failed to allocate host memory\n");
@@ -359,8 +280,20 @@ void runKernelBenchmark(KernelType kernel_type, int n) {
     cudaMalloc(&d_B, size);
     cudaMalloc(&d_C, size);
 
-    // Initialize matrices
-    initialize_benchmark_matrices(h_A, h_B, h_C, n);
+    // Initialize matrices - need to handle different types
+    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
+        // For float, use existing function
+        initialize_benchmark_matrices((float*)h_A, (float*)h_B, (float*)h_C, n);
+    } else {
+        // For other types (half, bfloat16), need type-appropriate initialization
+        fill_matrix_typed(h_A, n);  // Need to create this
+        fill_matrix_typed(h_B, n);
+        memset(h_C, 0, size);
+
+        printf("Debug: Matrix initialization complete\n");
+        printf("  A[0] = %f, B[0] = %f, C[0] = %f\n",
+               (float)h_A[0], (float)h_B[0], (float)h_C[0]);
+    }
 
     // Copy to device
     cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
@@ -373,8 +306,15 @@ void runKernelBenchmark(KernelType kernel_type, int n) {
         fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
     }
 
-    // Run the benchmark using the kernel type directly
-    runBenchmark(n, kernel_type, h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
+    // Run the benchmark - need to cast back to float* for runBenchmark compatibility
+    // OR make runBenchmark templated to handle COMPUTE_TYPE
+    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
+        runBenchmark(n, kernel_type, (float*)h_A, (float*)h_B, (float*)h_C,
+                     (float*)d_A, (float*)d_B, (float*)d_C, dataFile);
+    } else {
+        printf("Warning: runBenchmark currently only supports float matrices\n");
+        printf("Need to implement templated runBenchmark for COMPUTE_TYPE\n");
+    }
 
     // Clean up
     if (dataFile) fclose(dataFile);

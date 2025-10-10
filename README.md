@@ -1,522 +1,200 @@
-# GEMM Profiling: Backward Error Analysis of Matrix Multiplication Tiling Strategies
+# GEMM Numerical Analysis and Performance Profiling
 
-## Project Overview
+A comprehensive CUDA-based matrix multiplication (GEMM) **numerical analysis tool** that focuses on accuracy assessment across different kernel implementations and precision types, with performance profiling as a secondary feature.
 
-This project performs a comprehensive backward error analysis of different tiling strategies in General Matrix Multiplication (GEMM) implementations on CUDA GPUs. Unlike traditional performance profiling, this work focuses on the numerical accuracy implications of various tiling approaches, examining how tiling affects floating-point error propagation and accumulation.
+## Features
 
-## Project Structure
+- **Comprehensive Error Analysis**: Multi-sample statistical error analysis, ULP analysis, per-tile validation
+- **Mixed Precision Research**: Configurable compute and accumulate types with accuracy assessment
+- **Multiple GEMM Kernels**: Naive, tiled variants, mixed-precision implementations, cuBLAS, and CUTLASS
+- **Performance Profiling**: Timing analysis with roofline model metrics (secondary feature)
+- **Research-Focused**: Designed for numerical accuracy research in GPU computing
 
-```
-GEMMProfiling/
-├── src/                         # Source code files
-│   ├── main.cu                  # Main application entry point
-│   ├── benchmark.cu             # Performance benchmarking routines
-│   ├── gemms.cu                 # GEMM implementations (naive, tiled, cuBLAS, etc.)
-│   ├── error_analysis.cu        # ULP analysis and statistical error analysis
-│   ├── generate_test_matrix.cu  # Matrix generation utilities
-│   ├── config.cu                # Configuration and constants
-│   └── utils.cu                 # Utility functions and memory management
-├── include/                     # Header files
-│   ├── benchmark.h              # Benchmark function declarations
-│   ├── gemms.cuh                # GEMM implementation headers
-│   ├── error_analysis.cuh       # ULP analysis and statistical functions
-│   ├── generate_test_matrix.cuh # Matrix generation utilities
-│   ├── config.h                 # Configuration constants
-│   └── utils.cuh                # Utility function headers
-├── scripts/                     # Python analysis and plotting scripts
-│   ├── plot_numerical_analysis.py  # Visualize numerical analysis results
-│   ├── plot_roofline.py         # Generate roofline performance plots
-│   ├── analysis/                # Analysis utility scripts
-│   ├── plotting/                # Additional plotting utilities
-│   └── utils/                   # Script utilities
-├── data/                        # Generated data files (created at runtime)
-│   ├── numerical_analysis_*.dat # Raw numerical analysis data
-│   ├── numerical_analysis_summary.csv  # Summary statistics
-│   └── roofline_data.csv        # Performance benchmarking data
-├── plots/                       # Generated visualization outputs
-├── build/                       # Compiled object files
-├── bin/                         # Additional executables
-├── arch-tests/                  # Architecture-specific tests
-├── old_stuff/                   # Legacy code and scripts
-└── output/                      # Additional output files
-```
+## Available Kernels
 
-## Key Research Questions
+| Kernel Name | Description |
+|-------------|-------------|
+| `naive` | Basic per-thread implementation |
+| `tiled` | Shared memory tiling |
+| `tiled_opt` | Optimized tiled implementation |
+| `tiled_pairwise` | Tiled with pairwise summation |
+| `tiled_pairwise_mixprec` | Mixed-precision tiled with pairwise summation |
+| `tiled_rect` | Rectangular tiling (non-square tiles) |
+| `tiled_mixprec` | Mixed-precision tiling (uses `COMPUTE_TYPE`/`ACCUMULATE_TYPE`) |
+| `cublas` | NVIDIA cuBLAS library |
+| `cutlass` | NVIDIA CUTLASS library |
 
-- How do different tiling strategies affect the backward error of GEMM operations?
-- What is the relationship between tile size and numerical stability?
-- How do different matrix properties (condition number, sparsity) impact error behavior in tiled implementations?
-- What are the accuracy vs. performance tradeoffs for various GEMM implementations?
+## Core Usage - Error Analysis
 
-## Implemented GEMM Variants
-
-This repository contains multiple GEMM implementations, each with different tiling strategies:
-
-- **Naive Implementation**: Basic matrix multiplication without tiling
-- **Square Tiling**: Classic square tiles (TILE_SIZE × TILE_SIZE)
-- **Rectangular Tiling**: Non-square tiles (TILE_M × TILE_N × TILE_K)
-- **cuBLAS**: NVIDIA's optimized BLAS implementation
-- **cuBLAS Tensor Cores**: Mixed-precision acceleration using Tensor Cores
-- **CUTLASS**: CUDA Templates for Linear Algebra Subroutines
-
-## Numerical Analysis Framework
-
-### ULP (Units in the Last Place) Analysis
-
-The project now focuses on **ULP-based error analysis**, providing statistically rigorous numerical accuracy assessment:
-
-1. **ULP Distance Computation**:
-   - Computes exact ULP distance between kernel results and FP64 reference
-   - Uses FP64 computation with single rounding to FP32 for highest precision reference
-   - Handles special cases (infinities, NaN, sign differences)
-
-2. **Statistical Analysis**:
-   - 9-bin histogram analysis of ULP distribution: [0, 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65+]
-   - Wilson confidence intervals for robust proportion estimation
-   - Percentile calculations (50th, 90th, 95th, 99th percentiles)
-
-3. **Multi-Sample Analysis**:
-   - Tests multiple random matrix pairs for statistical robustness
-   - Independent seed generation using cryptographic-quality hash functions
-   - Aggregated statistics across all samples
-
-### Analysis Types
-
-#### ULP Analysis
+### Multi-Sample Error Analysis
 ```bash
-# Run ULP analysis with statistical measures
-./main --ulp-analysis --test=cublas --size=256
+# Primary use case - comprehensive error analysis
+./main --error-analysis --test=tiled_mixprec --size=1024 --matrix-type=wellcond
+
+# Test different precision combinations
+./main --error-analysis --test=tiled_pairwise_mixprec --size=2048 --matrix-type=illcond
+
+# Compare against reference implementations
+./main --error-analysis --test=cublas --size=1024 --matrix-type=normal
 ```
 
-**Output includes:**
-- ULP distance histogram with 9 bins
-- Wilson confidence intervals for each bin
-- Key percentiles (50th, 90th, 95th, 99th)
-- Statistical summary of numerical accuracy
-
-#### Multi-Sample Error Analysis
+### ULP (Units in Last Place) Analysis
 ```bash
-# Run comprehensive multi-sample analysis
-./main --error-analysis --test=tiled --size=512
+# Detailed precision analysis
+./main --ulp-analysis --test=tiled_mixprec --size=1024 --matrix-type=wellcond
+
+# Compare mixed precision variants
+./main --ulp-analysis --test=tiled_pairwise_mixprec --size=1024
 ```
 
-**Features:**
-- Multiple independent matrix samples
-- Frobenius norm error computation
-- Statistical aggregation across samples
-- Robust error characterization
+### Per-Tile Reference Analysis
+```bash
+# Detailed tile-level validation
+./main --per-tile --test=tiled_mixprec --size=1024 --sample=0
 
-### Matrix Generation
+# Analyze specific problematic samples
+./main --per-tile --test=tiled_pairwise_mixprec --size=2048 --sample=5
+```
 
-The framework supports various matrix types for comprehensive testing:
+### Combined Analysis (Tradeoff Study)
+```bash
+# Run both accuracy and performance analysis
+./main --tradeoff --test=tiled_mixprec --size=1024 --matrix-type=wellcond
+```
 
-- **MATRIX_RANDOM**: Standard uniform random distribution [0,1]
-- **MATRIX_ODO_WELL_CONDITIONED**: Near-identity matrices with low condition numbers
-- **MATRIX_ODO_ILL_CONDITIONED**: Matrices with high condition numbers for stress testing
-- **MATRIX_ZEROMEAN**: Zero-mean uniform distribution [-0.5, 0.5]
-- **MATRIX_UNIFORM_POSITIVE**: Positive uniform distribution [0.1, 1.0]
-- **MATRIX_RADEMACHER**: Random ±1 values (Rademacher distribution)
-- **MATRIX_LOAD_FROM_FILE**: Load custom matrices from binary files
+## Secondary Usage - Performance Analysis
 
-## Unified Kernel Launch Architecture
+### Performance Testing
+```bash
+# Performance benchmarking (secondary feature)
+./main --performance --test=tiled_mixprec --size=1024
 
-The project uses a **unified kernel dispatch system** for maintainability and performance:
+# Resource utilization assessment
+./main --assess-resources --test=tiled_pairwise_mixprec --size=2048
+```
+
+## Mixed Precision Configuration
+
+The tool's primary focus is mixed-precision accuracy research. Configure in `config.h`:
 
 ```cpp
-// Centralized kernel dispatch
-KernelType kernel_type = getKernelTypeFromName("tiled_pairwise");
-launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, blocks, threads);
+#define COMPUTE_TYPE __half        // Input/computation precision
+#define ACCUMULATE_TYPE float      // Accumulation precision
 ```
 
-Benefits:
-- ✅ **Zero Runtime Overhead**: Direct function pointer calls during timing
-- ✅ **Single Source of Truth**: All dispatch logic centralized in `src/utils.cu`
-- ✅ **Type Safe**: Compile-time validation with enum-based kernel types
-- ✅ **Easy Extension**: Add new kernels by extending enum and function table## Tools and Visualization
-
-This repository includes analysis tools for:
-
-- **ULP Analysis**: Statistical analysis of Units in Last Place error distributions
-- **Multi-Sample Analysis**: Robust error characterization across multiple test cases
-- **Performance Benchmarking**: Roofline analysis and throughput measurement
-- **Statistical Visualization**: Error distribution plots with confidence intervals
-
-## Building and Running
-
-### Prerequisites
-- CUDA Toolkit 11.0 or higher
-- Python 3.7+ with NumPy, Matplotlib, and Seaborn for visualization
-- (Optional) CUTLASS library for additional GEMM implementations
-- Make sure you have sufficient GPU memory for large matrix operations
-
-### Compilation
-
-The project uses a Makefile that automatically handles the new source structure:
-
+Or override at compile time:
 ```bash
-# Clean and build everything
-make clean && make
-
-# Build with verbose output
-make clean && make VERBOSE=1
-
-# Check for CUTLASS support (optional)
-# Set CUTLASS_PATH if you have CUTLASS installed
-export CUTLASS_PATH=/path/to/cutlass
-make clean && make
+make COMPUTE_TYPE=__half ACCUMULATE_TYPE=float
 ```
 
-The build system will:
-- Compile all source files from `src/` directory
-- Place object files in `build/` directory
-- Generate the main executable in the project root
-- Automatically detect CUTLASS support if available
-
-### Running the Application
-
-#### Basic Usage
-
+### Mixed Precision Research Workflow
 ```bash
-# Show all available options
-./main --help
+# 1. Compile for specific precision combination
+make COMPUTE_TYPE=__half ACCUMULATE_TYPE=float
 
-# Run all benchmarks with default matrix sizes
-./main --all
+# 2. Run comprehensive error analysis
+./main --error-analysis --test=tiled_mixprec --size=1024 --matrix-type=wellcond
 
-# Run specific GEMM implementation performance test
-./main --performance --test=tiled --size=512
+# 3. Analyze ULP errors for precision insights
+./main --ulp-analysis --test=tiled_mixprec --size=1024
 
-# Run ULP analysis
-./main --ulp-analysis --test=cublas --size=256
+# 4. Investigate specific tiles if needed
+./main --per-tile --test=tiled_mixprec --size=1024 --sample=0
+
+# 5. Optional: Check performance impact
+./main --performance --test=tiled_mixprec --size=1024
 ```
 
-#### Performance Benchmarking
+## Matrix Types for Numerical Analysis
 
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `wellcond` | Well-conditioned matrices | Baseline accuracy testing |
+| `illcond` | Ill-conditioned matrices | Stress testing numerical stability |
+| `normal` | Normal distribution | General-purpose testing |
+| `scaled` | Scaled matrices | Range sensitivity analysis |
+| `skewed` | Skewed distributions | Distribution robustness |
+| `file` | Load from file | Custom test cases |
+
+## Analysis Output Files
+
+- **Error Analysis**: `data/error_analysis_<kernel>.csv` - Statistical error metrics
+- **ULP Analysis**: `data/ulp_analysis_<kernel>.csv` - Precision error analysis
+- **Per-tile Analysis**: `data/per_tile_<kernel>.csv` - Detailed tile validation
+- **Performance Data**: `data/roofline_data.csv` - Performance metrics (secondary)
+
+## Research-Focused Examples
+
+### Mixed Precision Accuracy Study
 ```bash
-# Run comprehensive performance analysis
-./main --all
+#!/bin/bash
+# Study different precision combinations
 
-# Run specific implementation with performance testing
-./main --performance --test=tiled --size=512
+precisions=("float,float" "__half,float" "__half,__half")
+kernels=("tiled_mixprec" "tiled_pairwise_mixprec")
+conditions=("wellcond" "illcond")
 
-# Quick benchmark of all implementations
-./main --all
+for precision in "${precisions[@]}"; do
+    IFS=',' read compute accumulate <<< "$precision"
+    make clean && make COMPUTE_TYPE=$compute ACCUMULATE_TYPE=$accumulate
+
+    for kernel in "${kernels[@]}"; do
+        for condition in "${conditions[@]}"; do
+            echo "Testing $kernel with $compute/$accumulate on $condition matrices"
+            ./main --error-analysis --test=$kernel --size=1024 --matrix-type=$condition
+            ./main --ulp-analysis --test=$kernel --size=1024 --matrix-type=$condition
+        done
+    done
+done
 ```
 
-#### ULP Analysis
-
-The ULP analysis provides the most precise numerical accuracy assessment:
-
+### Accuracy vs. Performance Tradeoff
 ```bash
-# Run ULP analysis on specific implementation
-./main --ulp-analysis --test=cublas --size=512
-
-# Run ULP analysis with specific matrix type
-./main --ulp-analysis --test=tiled --size=1024 --matrix-type=illcond
+# Comprehensive analysis for research paper
+./main --tradeoff --test=tiled_pairwise_mixprec --size=2048 --matrix-type=wellcond
 ```
 
-This generates:
-- ULP distance histogram with Wilson confidence intervals
-- Percentile analysis of ULP distribution
-- Statistical summary of numerical errors
-- Comparison against FP64 reference computation
-
-#### Multi-Sample Error Analysis
+## Build System
 
 ```bash
-# Run comprehensive error analysis
-./main --error-analysis --test=tiled --size=1024
-
-# Run with specific matrix types
-./main --error-analysis --test=cublas --size=512 --matrix-type=wellcond
-```
-
-This will generate:
-- Frobenius norm error analysis across multiple samples
-- Statistical aggregation of error metrics
-- Robust characterization of implementation accuracy
-
-#### Available Test Types
-
-- `naive`: Basic O(n³) matrix multiplication
-- `tiled`: Square tiling implementation
-- `tiled_rect`: Rectangular tiling (if implemented)
-- `cublas`: NVIDIA cuBLAS library
-- `cutlass`: CUTLASS template library (if available)
-- `all`: Run all available implementations
-
-### Data Analysis and Visualization
-
-After running numerical analysis, use the Python scripts to visualize results:
-
-```bash
-# Create numerical analysis plots
-cd scripts/
-python plot_numerical_analysis.py
-
-# Generate roofline performance plots
-python plot_roofline.py
-
-# For custom analysis, data files are in ../data/
-```
-
-The visualization scripts will:
-- Read data from the `data/` directory
-- Generate plots in the `plots/` directory
-- Create heatmaps, error distribution plots, and performance analysis
-
-### Advanced Usage
-
-#### Testing Different Matrix Types
-
-The error analysis automatically tests multiple matrix types:
-
-```bash
-# ULP analysis tests all supported matrix types automatically
-./main --ulp-analysis --test=cublas --size=1024
-
-# Error analysis uses random matrices by default
-./main --error-analysis --test=tiled --size=512
-```
-
-#### Custom Tile Size Analysis
-
-To test different tile sizes, modify the `TILE_SIZE` definition in the source code:
-
-```bash
-# Edit include/config.h to change TILE_SIZE
-# Then recompile and run
-make clean && make
-./main --ulp-analysis --test=tiled --size=1024
-```
-
-#### Architecture-Specific Tests
-
-```bash
-# Run memory access pattern tests
-cd arch-tests/
+# Build with default configuration (float/float)
 make
-./run_tests.sh
+
+# Build for half precision research
+make COMPUTE_TYPE=__half ACCUMULATE_TYPE=float
+
+# Build for extreme precision testing
+make COMPUTE_TYPE=__half ACCUMULATE_TYPE=double
+
+# Clean build
+make clean
 ```
 
-## Command Line Options
+## Key Research Features
 
-### Core Options
-- `--help`, `-h`: Show detailed usage information
-- `--size=N`: Set matrix size (N×N), default is 1024
-- `--all`: Run all tests and available matrix sizes
+1. **Statistical Error Analysis**: Multi-sample error statistics with confidence intervals
+2. **ULP-Level Precision**: Units in Last Place error measurement for IEEE 754 compliance
+3. **Condition Number Sensitivity**: Testing across well/ill-conditioned matrices
+4. **Mixed Precision Variants**: Multiple algorithmic approaches to mixed precision
+5. **Tile-Level Validation**: Detailed analysis of computational blocks
+6. **Reference Comparison**: High-precision validation against cuBLAS/CPU references
 
-### Test Selection
-- `--test=TYPE`: Run specific implementation
-  - `naive`: Basic matrix multiplication
-  - `tiled`: Square tiling implementation
-  - `cublas`: NVIDIA cuBLAS library
-  - `cutlass`: CUTLASS library (if available)
-  - `all`: Run all available implementations
+## Use Cases
 
-### Verification and Analysis
-- `--ulp-analysis`: Perform ULP (Units in Last Place) analysis with statistical measures
-- `--error-analysis`: Run multi-sample error analysis with Frobenius norm computation
-- `--performance`: Run performance benchmarking only
-- `--complete`: Run both error analysis and performance testing
-- `--matrix-type=TYPE`: Specify matrix type for analysis (optional)
+- **Numerical Analysis Research**: Study accuracy of mixed-precision GEMM implementations
+- **Algorithm Development**: Validate new mixed-precision algorithms
+- **Hardware Evaluation**: Assess numerical behavior on different GPU architectures
+- **Precision Studies**: Compare accuracy across different precision combinations
+- **Performance vs Accuracy**: Quantify tradeoffs in mixed-precision computing
 
-### Example Commands
+## Dependencies
 
-```bash
-# Performance benchmarking
-./main --performance --test=tiled --size=512
-./main --all
+- **CUDA Toolkit** (11.0+) with mixed precision support
+- **cuBLAS** - Reference implementation
+- **CUTLASS** - NVIDIA's template library
+- **C++17** - For template metaprogramming
 
-# ULP analysis
-./main --ulp-analysis --test=cublas --size=1024
-./main --ulp-analysis --test=tiled --size=512 --matrix-type=illcond
+---
 
-# Multi-sample error analysis
-./main --error-analysis --test=tiled --size=1024
-./main --error-analysis --test=cublas --size=512 --matrix-type=wellcond
-
-# Complete analysis (both error and performance)
-./main --complete --test=tiled --size=1024
-
-# Quick testing
-./main --performance --test=cublas --size=256
-```
-
-## Output Files and Data Organization
-
-### Generated Data Files
-
-All generated data is automatically saved to the `data/` directory:
-
-**ULP Analysis Data:**
-- ULP histogram data with statistical measures
-- Wilson confidence intervals for robust proportion estimation
-- Percentile analysis (50th, 90th, 95th, 99th percentiles)
-
-**Error Analysis Data:**
-- Multi-sample Frobenius norm error data
-- Statistical aggregation across samples
-- Comprehensive error characterization
-
-**Performance Data:**
-- `roofline_data.csv`: Performance benchmarking results for roofline analysis
-
-### Visualization Outputs
-
-Generated plots are saved to the `plots/` directory:
-- ULP analysis visualizations showing error distribution
-- Statistical plots with confidence intervals and percentiles
-- Multi-sample error analysis plots
-- Performance roofline plots
-
-## Workflow Examples
-
-### Complete Analysis Workflow
-
-```bash
-# 1. Build the project
-make clean && make
-
-# 2. Run ULP analysis for precise error measurement
-./main --ulp-analysis --test=cublas --size=1024
-
-# 3. Run multi-sample error analysis
-./main --error-analysis --test=tiled --size=1024
-
-# 4. Generate visualizations (if visualization scripts available)
-cd scripts/
-python plot_error_analysis.py
-python plot_roofline.py
-
-# 5. View results
-ls ../plots/                    # Check generated plots
-cat ../data/error_analysis_summary.txt  # View summary statistics
-```
-
-### Performance Comparison Workflow
-
-```bash
-# 1. Compare different implementations
-./main --performance --test=naive --size=512
-./main --performance --test=tiled --size=512
-./main --performance --test=cublas --size=512
-
-# 2. Run full benchmark suite
-./main --all
-
-# 3. Analyze performance characteristics (if scripts available)
-cd scripts/
-python plot_roofline.py
-```
-
-### Development and Testing Workflow
-
-```bash
-# 1. Test with small matrices during development
-./main --ulp-analysis --test=tiled --size=256
-
-# 2. Verify correctness with performance test
-./main --performance --test=tiled --size=512
-
-# 3. Comprehensive error analysis
-./main --error-analysis --test=tiled --size=1024
-
-# 4. Check architecture-specific behavior
-cd arch-tests/
-make && ./run_tests.sh
-```
-
-## Troubleshooting
-
-### Common Issues
-
-**Build Errors:**
-- Ensure CUDA Toolkit is properly installed and in PATH
-- Check that nvcc compiler version is compatible
-- Verify CUTLASS path if using CUTLASS features
-
-**Runtime Errors:**
-- Check GPU memory availability for large matrices
-- Ensure data/ directory is writable
-- Verify cuBLAS library is available
-
-**Missing Output:**
-- Data files are generated in `data/` directory
-- Plots are created in `plots/` directory
-- Check file permissions if files aren't created
-
-### Memory Requirements
-
-Approximate GPU memory usage for different matrix sizes:
-- 256×256: ~1 MB
-- 512×512: ~4 MB
-- 1024×1024: ~16 MB
-- 2048×2048: ~64 MB
-- 4096×4096: ~256 MB
-
-Additional memory is required for intermediate results and analysis data.
-
-## Results and Key Findings
-
-The ULP-based error analysis has revealed several important insights:
-
-### ULP Distribution Patterns
-- Most accurate implementations show concentrated ULP distribution in lower bins (0-2 ULP)
-- Different GEMM implementations exhibit distinct ULP distribution signatures
-- Wilson confidence intervals provide robust statistical characterization of implementation accuracy
-
-### Statistical Measures
-- 50th percentile ULP distances characterize typical accuracy
-- 95th and 99th percentiles reveal worst-case error behavior
-- Confidence intervals enable rigorous comparison between implementations
-
-### Implementation Comparison
-- cuBLAS typically provides best overall accuracy with tight ULP distributions
-- Custom tiling strategies show varying accuracy depending on tile size and algorithm
-- FP64 reference computation ensures highest precision baseline for comparison
-
-### Matrix Properties Impact
-- Matrix conditioning affects ULP distribution spread
-- Random matrices provide good baseline for general accuracy assessment
-- Well-conditioned vs ill-conditioned matrices reveal implementation robustness
-
-## Future Work
-
-### Planned Enhancements
-- Analysis of mixed-precision implementations (FP16, INT8)
-- Impact of block-cyclic distribution on error patterns
-- Extension to other linear algebra operations (LU, QR, SVD)
-- Automatic tile size selection based on numerical stability requirements
-- Integration with tensor operation libraries
-
-### Research Directions
-- Error analysis for sparse matrix operations
-- Fault tolerance and error correction in tiled computations
-- Machine learning applications with controlled numerical precision
-- Real-time error monitoring during computation
-
-## License
-
-MIT License
-
-Copyright (c) 2025 Oana Marin
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+**Primary Focus**: This tool is designed for **numerical analysis research** in GPU matrix multiplication, with particular emphasis on mixed-precision arithmetic accuracy assessment.
 

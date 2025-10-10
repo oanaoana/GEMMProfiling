@@ -4,6 +4,8 @@
 #include "config.h"  // For KernelType enum
 
 void fill_matrix(float *mat, int N);
+template<typename T>
+void fill_matrix_typed(T* mat, int N);
 void verify_result(float *A, float *B, float *C, int N);
 void compute_C_reference(float *A, float *B, float *C_exact, int N);
 void compute_C_reference_gpu_fp64(float *h_A, float *h_B, float *h_C_exact, int N);

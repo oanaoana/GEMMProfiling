@@ -560,3 +560,18 @@ void compute_dimensions(const char* kernel_name, int n, dim3* threadsPerBlock, d
     compute_kernel_dimensions_dispatch(kernel_type, n, threadsPerBlock, numBlocks);
 }
 
+// Add to utils.cu:
+template<typename T>
+void fill_matrix_typed(T* mat, int N) {
+    for (int i = 0; i < N * N; i++) {
+        mat[i] = static_cast<T>(static_cast<float>(rand()) / RAND_MAX);
+    }
+}
+
+// Explicit instantiations
+template void fill_matrix_typed<float>(float* mat, int N);
+template void fill_matrix_typed<__half>(__half* mat, int N);
+#ifdef __CUDA_BF16_TYPES_EXIST__
+template void fill_matrix_typed<__nv_bfloat16>(__nv_bfloat16* mat, int N);
+#endif
+

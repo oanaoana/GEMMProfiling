@@ -14,8 +14,7 @@ typedef enum {
     MODE_PERFORMANCE,
     MODE_ERROR_ANALYSIS,
     MODE_ULP_ANALYSIS,
-    MODE_COMPLETE_ANALYSIS,
-    MODE_ALL_BENCHMARKS,
+    MODE_TRADEOFF,
     MODE_ASSESS_RESOURCES,
     MODE_PER_TILE_ANALYSIS  // Add new mode
 } RunMode;
@@ -23,16 +22,15 @@ typedef enum {
 void printUsage() {
     printf("Usage: ./main <mode> [options]\n\n");
     printf("Modes:\n");
-    printf("  --all                 Run all benchmark tests and sizes\n");
     printf("  --performance         Run performance test for specific kernel/size\n");
     printf("  --error-analysis      Run error analysis for specific kernel/size\n");
     printf("  --ulp-analysis        Run ULP analysis for specific kernel/size\n");
-    printf("  --complete            Run both error analysis AND performance test for kernel/size\n");
+    printf("  --tradeoff            Run trade-off analysis for specific kernel/size\n");
     printf("  --assess-resources    Assess kernel resource usage for specific kernel/size\n");
     printf("  --per-tile            Run per-tile reference analysis for specific kernel/size/sample\n");  // Add this line
     printf("\nOptions:\n");
-    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources, --per-tile)\n");
-    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --complete, --assess-resources, --per-tile)\n");
+    printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --tradeoff, --assess-resources, --per-tile)\n");
+    printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --tradeoff, --assess-resources, --per-tile)\n");
     printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
     printf("  --sample=N            Specify sample index for per-tile analysis (optional, default: 0)\n");  // Add this line
     printf("  --help                Show this help\n");
@@ -40,33 +38,9 @@ void printUsage() {
     printf("  naive, tiled, tiled_opt, tiled_pairwise, tiled_rect\n");
     printf("  tiled_mixprec         Mixed precision kernel (uses compile-time COMPUTE_TYPE/ACCUMULATE_TYPE)\n");
     printf("  cublas, cutlass, etc.\n");
-
-    printf("\nMixed Precision Examples:\n");
-    printf("  make baseline && ./main --performance --test=tiled_mixprec --size=1024\n");
-    printf("  make fp16_mixed && ./main --error-analysis --test=tiled_mixprec --size=512\n");
-    printf("  make bf16_mixed && ./main --performance --test=tiled_mixprec --size=2048\n");
-    printf("  make fp64_acc && ./main --error-analysis --test=tiled_mixprec --size=1024\n");
 }
 
 int main(int argc, char **argv) {
-
-    // Handle special debug mode
-    if (argc > 1 && strcmp(argv[1], "--debug") == 0) {
-        printf("=== Debug Mode ===\n");
-        int device_count;
-        cudaError_t err = cudaGetDeviceCount(&device_count);
-        if (err != cudaSuccess) {
-            printf("CUDA Error: %s\n", cudaGetErrorString(err));
-            return 1;
-        }
-        printf("✓ CUDA works, found %d device(s)\n", device_count);
-
-        cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, 0);
-        printf("✓ GPU: %s\n", prop.name);
-        printf("✓ Debug test passed\n");
-        return 0;  // Exit after debug
-    }
 
     // Parse arguments
     RunMode mode = MODE_NONE;
@@ -79,8 +53,6 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printUsage();
             return 0;
-        } else if (strcmp(argv[i], "--all") == 0) {
-            mode = MODE_ALL_BENCHMARKS;
         } else if (strcmp(argv[i], "--performance") == 0) {
             mode = MODE_PERFORMANCE;
         } else if (strcmp(argv[i], "--error-analysis") == 0) {
@@ -89,8 +61,8 @@ int main(int argc, char **argv) {
             mode = MODE_ULP_ANALYSIS;
         } else if (strcmp(argv[i], "--assess-resources") == 0) {
             mode = MODE_ASSESS_RESOURCES;
-        } else if (strcmp(argv[i], "--complete") == 0) {
-            mode = MODE_COMPLETE_ANALYSIS;
+        } else if (strcmp(argv[i], "--tradeoff") == 0) {
+            mode = MODE_TRADEOFF;
         } else if (strcmp(argv[i], "--per-tile") == 0) {  // Add per-tile mode parsing
             mode = MODE_PER_TILE_ANALYSIS;
         } else if (strncmp(argv[i], "--test=", 7) == 0) {
@@ -122,14 +94,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES || mode == MODE_PER_TILE_ANALYSIS) && strlen(test_name) == 0) {
-        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, complete, assess-resources, and per-tile modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_TRADEOFF || mode == MODE_ASSESS_RESOURCES || mode == MODE_PER_TILE_ANALYSIS) && strlen(test_name) == 0) {
+        printf("Error: --test=NAME is required for performance, error analysis, ULP analysis, tradeoff, assess-resources, and per-tile modes\n");
         printUsage();
         return 1;
     }
 
-    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_COMPLETE_ANALYSIS || mode == MODE_ASSESS_RESOURCES || mode == MODE_PER_TILE_ANALYSIS) && matrix_size <= 0) {
-        printf("Error: --size=N is required for performance, error analysis, ULP analysis, complete, assess-resources, and per-tile modes\n");
+    if ((mode == MODE_PERFORMANCE || mode == MODE_ERROR_ANALYSIS || mode == MODE_ULP_ANALYSIS || mode == MODE_TRADEOFF || mode == MODE_ASSESS_RESOURCES || mode == MODE_PER_TILE_ANALYSIS) && matrix_size <= 0) {
+        printf("Error: --size=N is required for performance, error analysis, ULP analysis, tradeoff, assess-resources, and per-tile modes\n");
         printUsage();
         return 1;
     }
@@ -152,20 +124,12 @@ int main(int argc, char **argv) {
 
     // Execute based on mode
     switch (mode) {
-        case MODE_ALL_BENCHMARKS: {
-            printf("\nRunning all benchmarks...\n");
-            bool enabled_tests[NUM_TESTS];
-            bool enabled_sizes[NUM_SIZES];
-            for (int i = 0; i < NUM_TESTS; i++) enabled_tests[i] = true;
-            for (int i = 0; i < NUM_SIZES; i++) enabled_sizes[i] = true;
-            runAllBenchmarks(enabled_tests, enabled_sizes);
-            break;
-        }
 
         case MODE_PERFORMANCE: {
             KernelType kernel_type = getKernelTypeFromName(test_name);
             printf("\nRunning performance test: %s at size %d\n", test_name, matrix_size);
-            runKernelBenchmark(kernel_type, matrix_size);
+            runKernelPerformance(kernel_type, matrix_size);
+            check_occupancy_for_kernel(kernel_type, matrix_size);
             break;
         }
 
@@ -199,7 +163,7 @@ int main(int argc, char **argv) {
             break;
         }
 
-        case MODE_COMPLETE_ANALYSIS: {
+        case MODE_TRADEOFF: {
             printf("\n=== Complete Analysis: %s at size %d ===\n", test_name, matrix_size);
 
             // First run error analysis
@@ -212,22 +176,9 @@ int main(int argc, char **argv) {
 
             // Then run performance test
             printf("\n[2/2] Running Performance Test...\n");
-            runKernelBenchmark(kernel_type, matrix_size);
+            runKernelPerformance(kernel_type, matrix_size);
 
             printf("\n=== Complete Analysis Finished ===\n");
-            break;
-        }
-
-        case MODE_ASSESS_RESOURCES: {
-            printf("\nRunning kernel resource assessment: %s at size %d\n", test_name, matrix_size);
-
-            KernelType kernel_type = getKernelTypeFromName(test_name);
-            if (kernel_type == (KernelType)-1) {
-                printf("Error: Test '%s' not found\n", test_name);
-                return 1;
-            }
-
-            assess_kernel_resources(kernel_type, matrix_size);
             break;
         }
 

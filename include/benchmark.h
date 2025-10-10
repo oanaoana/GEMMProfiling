@@ -3,16 +3,11 @@
 #include <stdio.h>
 #include "config.h"  // For SIZES and NUM_SIZES
 
-#define NUM_TESTS 9
-
-extern const char* available_test_names[NUM_TESTS];
-
 // Public API functions
 
 void initialize_benchmark_matrices(float* h_A, float* h_B, float* h_C, int n);
 
-void runAllBenchmarks(bool* enabled_tests, bool* enabled_sizes);
-void runKernelBenchmark(KernelType kernel_type, int matrix_size);
+void runKernelPerformance(KernelType kernel_type, int matrix_size);
 void assess_kernel_resources(KernelType kernel_type, int n);
 
 // Implementation detail functions (used internally)
