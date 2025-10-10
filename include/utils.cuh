@@ -10,10 +10,6 @@ void compute_C_reference_gpu_fp64(float *h_A, float *h_B, float *h_C_exact, int 
 
 void printDevicePerformanceInfo();
 void printCacheInfo();
-void check_occupancy();
-
-// Kernel resource assessment
-void assess_kernel_resources(KernelType kernel_type, int n);
 
 // Statistics computation for arrays
 typedef struct {
@@ -35,6 +31,8 @@ KernelType getKernelTypeFromName(const char* name);
 
 // Matrix type name to enum mapping
 MatrixType getMatrixTypeFromName(const char* name);
+
+void* get_kernel_function_pointer(KernelType kernel_type);
 
 // Reverse conversion: enum to string
 const char* kernelTypeToString(KernelType kernel_type);

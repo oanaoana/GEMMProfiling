@@ -17,6 +17,13 @@ __global__ void matmul_tiled_mixprec(
     AccumulateType* __restrict__ C,
     int N);
 
+template <typename ComputeType, typename AccumulateType>
+__global__ void matmul_tiled_pairwise_mixprec(
+    const AccumulateType* __restrict__ A,
+    const AccumulateType* __restrict__ B,
+    AccumulateType* __restrict__ C,
+    int N);
+
 // Kernel launch wrappers - all with consistent signature for benchmark
 void launch_naive(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);

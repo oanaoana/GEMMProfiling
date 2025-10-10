@@ -163,8 +163,9 @@ int main(int argc, char **argv) {
         }
 
         case MODE_PERFORMANCE: {
+            KernelType kernel_type = getKernelTypeFromName(test_name);
             printf("\nRunning performance test: %s at size %d\n", test_name, matrix_size);
-            runSingleBenchmark(test_name, matrix_size);
+            runKernelBenchmark(kernel_type, matrix_size);
             break;
         }
 
@@ -211,7 +212,7 @@ int main(int argc, char **argv) {
 
             // Then run performance test
             printf("\n[2/2] Running Performance Test...\n");
-            runSingleBenchmark(test_name, matrix_size);
+            runKernelBenchmark(kernel_type, matrix_size);
 
             printf("\n=== Complete Analysis Finished ===\n");
             break;
