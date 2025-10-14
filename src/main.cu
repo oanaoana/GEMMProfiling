@@ -129,7 +129,6 @@ int main(int argc, char **argv) {
             KernelType kernel_type = getKernelTypeFromName(test_name);
             printf("\nRunning performance test: %s at size %d\n", test_name, matrix_size);
             runKernelPerformance(kernel_type, matrix_size);
-            check_occupancy_for_kernel(kernel_type, matrix_size);
             break;
         }
 

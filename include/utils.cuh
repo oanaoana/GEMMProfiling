@@ -49,4 +49,8 @@ void compute_kernel_dimensions_dispatch_1D(int n, int* threadsPerBlock, int* num
 
 void compute_dimensions(const char* kernel_name, int n, dim3* threadsPerBlock, dim3* numBlocks);
 
+// Add this function declaration:
+const char* getComputeTypeString();
+const char* getAccumulateTypeString();
+
 #endif // UTILS_CUH

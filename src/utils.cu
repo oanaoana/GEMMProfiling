@@ -575,3 +575,44 @@ template void fill_matrix_typed<__half>(__half* mat, int N);
 template void fill_matrix_typed<__nv_bfloat16>(__nv_bfloat16* mat, int N);
 #endif
 
+const char* getComputeTypeString() {
+    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
+        return "FP32";
+    } else if constexpr (std::is_same_v<COMPUTE_TYPE, __half>) {
+        return "FP16";
+    } else if constexpr (std::is_same_v<COMPUTE_TYPE, double>) {
+        return "FP64";
+    }
+#ifdef __CUDA_BF16_TYPES_EXIST__
+    else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16>) {
+        return "BF16";
+    }
+#endif
+    else if constexpr (sizeof(COMPUTE_TYPE) == 1) {
+        return "INT8";  // For int8_t types
+    } else if constexpr (sizeof(COMPUTE_TYPE) == 2 && std::is_integral_v<COMPUTE_TYPE>) {
+        return "INT16"; // For int16_t types
+    } else {
+        return "UNKNOWN";
+    }
+}
+
+// Add this function to utils.cu:
+const char* getAccumulateTypeString() {
+    if constexpr (std::is_same_v<ACCUMULATE_TYPE, float>) {
+        return "FP32";
+    } else if constexpr (std::is_same_v<ACCUMULATE_TYPE, double>) {
+        return "FP64";
+    } else if constexpr (std::is_same_v<ACCUMULATE_TYPE, __half>) {
+        return "FP16";
+    }
+#ifdef __CUDA_BF16_TYPES_EXIST__
+    else if constexpr (std::is_same_v<ACCUMULATE_TYPE, __nv_bfloat16>) {
+        return "BF16";
+    }
+#endif
+    else {
+        return "UNKNOWN";
+    }
+}
+

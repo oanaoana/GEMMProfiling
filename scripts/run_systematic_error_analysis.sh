@@ -73,6 +73,3 @@ echo "Generated $summary_files summary files in data/ directory"
 echo ""
 echo "Example output files:"
 find data -name "*_summary_n*.csv" | head -5
-
-echo ""
-echo "Run 'python scripts/analyze_systematic_results.py' to analyze the results!"

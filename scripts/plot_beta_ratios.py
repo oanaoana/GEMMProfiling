@@ -22,8 +22,8 @@ from io import StringIO
 
 
 # Configure data folder here
-DATA_FOLDER = "data/data9_17"  # Change this to "data" for current data
-OUTPUT_FORMAT = "eps"  # "eps", "png", or "both"
+DATA_FOLDER = "data"  # Change this to "data" for current data
+OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)
 # Available types: '2powers', 'illcond', 'uniform_positive', 'wellcond', 'zeromean'
@@ -155,7 +155,7 @@ def load_data():
     return combined_df
 
 def create_beta_plots(df, actual_matrix_sizes):
-    """Create the 15 simple plots as requested."""
+    """Create the 20 simple plots as requested (now including std plots)."""
 
     os.makedirs("plots", exist_ok=True)
 
@@ -190,38 +190,30 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        # Overlays removed as requested
-
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-        # Create conditional mathtext labels based on bold setting
         y_label_text = r'$\mathbf{E_{AB} / u}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u$'
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
 
-        # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        # Apply bold formatting to tick labels if requested
         if TICK_LABEL_BOLD:
             ax = plt.gca()
             for label in ax.get_xticklabels() + ax.get_yticklabels():
                 label.set_weight('bold')
 
-        # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
         plt.xticks(tick_positions, tick_labels)
 
-        # Set y-axis bounds proportional to data
         if all_y_values:
             y_min, y_max = min(all_y_values), max(all_y_values)
             y_range = y_max / y_min if y_min > 0 else y_max - y_min
-            if y_range > 1:  # Only adjust if there's significant range
-                margin = 0.2  # 20% margin
+            if y_range > 1:
+                margin = 0.2
                 plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
 
-        # Save plot
         base_filename = f"plots/E_AB_over_u_{matrix_type}"
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
@@ -230,14 +222,11 @@ def create_beta_plots(df, actual_matrix_sizes):
     for matrix_type in matrix_types:
         plt.figure(figsize=(10, 6))
 
-        # Collect all y-values for this matrix type to determine bounds
         all_y_values = []
 
         for kernel in kernels:
-            # Get data for this kernel and matrix type
             subset = df[(df['matrix_type'] == matrix_type) & (df['kernel_type'] == kernel)]
             if len(subset) > 0:
-                # Sort by matrix size
                 subset = subset.sort_values('matrix_size')
                 y_values = subset['E_{AB}/beta']
                 all_y_values.extend(y_values)
@@ -248,23 +237,19 @@ def create_beta_plots(df, actual_matrix_sizes):
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-        # Create conditional mathtext labels based on bold setting
         y_label_text = r'$\mathbf{E_{AB} / \beta}$' if AXIS_LABEL_BOLD else r'$E_{AB} / \beta$'
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
 
-        # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        # Apply bold formatting to tick labels if requested
         if TICK_LABEL_BOLD:
             ax = plt.gca()
             for label in ax.get_xticklabels() + ax.get_yticklabels():
                 label.set_weight('bold')
 
-        # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
         plt.xticks(tick_positions, tick_labels)
 
@@ -272,19 +257,15 @@ def create_beta_plots(df, actual_matrix_sizes):
         plt.axhline(y=1, color='black', linestyle='--', alpha=0.5,
                    label='Theoretical Bound')
 
-        # Set y-axis bounds proportional to data (log scale)
         if all_y_values:
             y_min, y_max = min(all_y_values), max(all_y_values)
-            # Include y=1 line in bounds calculation
             y_min = min(y_min, 1.0)
             y_max = max(y_max, 1.0)
-
             y_range = y_max / y_min if y_min > 0 else y_max - y_min
-            if y_range > 1:  # Only adjust if there's significant range
-                margin = 0.2  # 20% margin for log scale
+            if y_range > 1:
+                margin = 0.2
                 plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
 
-        # Save plot
         base_filename = f"plots/E_AB_over_beta_{matrix_type}"
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
@@ -293,14 +274,11 @@ def create_beta_plots(df, actual_matrix_sizes):
     for matrix_type in matrix_types:
         plt.figure(figsize=(10, 6))
 
-        # Collect all y-values for this matrix type to determine bounds
         all_y_values = []
 
         for kernel in kernels:
-            # Get data for this kernel and matrix type
             subset = df[(df['matrix_type'] == matrix_type) & (df['kernel_type'] == kernel)]
             if len(subset) > 0:
-                # Sort by matrix size
                 subset = subset.sort_values('matrix_size')
                 y_values = subset['|C-C_ref|/(|A||B|)_avg']
                 all_y_values.extend(y_values)
@@ -311,36 +289,76 @@ def create_beta_plots(df, actual_matrix_sizes):
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-        # Create conditional mathtext labels based on bold setting
         y_label_text = r'$\mathbf{E_{AB}}$' if AXIS_LABEL_BOLD else r'$E_{AB}$'
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
 
-        # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        # Apply bold formatting to tick labels if requested
         if TICK_LABEL_BOLD:
             ax = plt.gca()
             for label in ax.get_xticklabels() + ax.get_yticklabels():
                 label.set_weight('bold')
 
-        # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
         plt.xticks(tick_positions, tick_labels)
 
-        # Set y-axis bounds proportional to data (log scale)
         if all_y_values:
             y_min, y_max = min(all_y_values), max(all_y_values)
             y_range = y_max / y_min if y_min > 0 else y_max - y_min
-            if y_range > 1:  # Only adjust if there's significant range
-                margin = 0.2  # 20% margin for log scale
+            if y_range > 1:
+                margin = 0.2
                 plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
 
-        # Save plot
         base_filename = f"plots/E_AB_{matrix_type}"
+        save_plot(base_filename, format=OUTPUT_FORMAT)
+        plt.close()
+
+    # 4. CREATE 5 NEW PLOTS FOR |C-C_ref|/(|A||B|)_std
+    for matrix_type in matrix_types:
+        plt.figure(figsize=(10, 6))
+
+        all_y_values = []
+
+        for kernel in kernels:
+            subset = df[(df['matrix_type'] == matrix_type) & (df['kernel_type'] == kernel)]
+            if len(subset) > 0:
+                subset = subset.sort_values('matrix_size')
+                y_values = subset['|C-C_ref|/(|A||B|)_std']
+                all_y_values.extend(y_values)
+                color = KERNEL_COLORS[kernel]
+                marker = KERNEL_MARKERS[kernel]
+                plt.plot(subset['matrix_size'], y_values,
+                        f'{marker}-', color=color,
+                        linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
+
+        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        y_label_text = r'$\mathbf{\sigma(E_{AB})}$' if AXIS_LABEL_BOLD else r'$\sigma(E_{AB})$'
+
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.grid(True, alpha=0.3)
+        plt.yscale('log')
+
+        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        if TICK_LABEL_BOLD:
+            ax = plt.gca()
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_weight('bold')
+
+        tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
+        plt.xticks(tick_positions, tick_labels)
+
+        if all_y_values:
+            y_min, y_max = min(all_y_values), max(all_y_values)
+            y_range = y_max / y_min if y_min > 0 else y_max - y_min
+            if y_range > 1:
+                margin = 0.2
+                plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
+
+        base_filename = f"plots/E_AB_std_{matrix_type}"
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
 
@@ -513,7 +531,7 @@ def create_single_kernel_deff_plot(df, actual_matrix_sizes, kernel_name):
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{D_{eff}}$' if AXIS_LABEL_BOLD else r'$D_{eff}$'
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
@@ -623,7 +641,7 @@ def deff_all_kernels(df, actual_matrix_sizes):
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{D_{eff}}$' if AXIS_LABEL_BOLD else r'$D_{eff}$'
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
@@ -725,7 +743,7 @@ def create_uncertainty_band_plots(df, actual_matrix_sizes):
                                alpha=0.5, color=color,
                                label=f'{KERNEL_LABELS[kernel]} p10-p95')
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight='bold')
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight='bold')
         plt.ylabel(r'$\mathbf{E_{AB} / u}$', fontsize=AXIS_LABEL_FONTSIZE, weight='bold')
         plt.title(f'E_{{AB}}/u with Uncertainty Bands - {matrix_type}', fontsize=TITLE_FONTSIZE, weight='bold')
         plt.legend(frameon=False, ncol=2, fontsize=LEGEND_FONTSIZE, loc='best')
@@ -794,7 +812,7 @@ def create_spread_cloud_plots(df, actual_matrix_sizes):
 
         # Format the plot
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel('Deviation from mean (%) - P10 to P95 spread', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
         plt.grid(True, alpha=0.3)
@@ -922,7 +940,7 @@ def create_calibration_comparison_plots(df, actual_matrix_sizes, target_kernels,
         # Create conditional mathtext labels based on bold setting
         y_label_text = r'$\mathbf{E_{AB} / u}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u$'
 
-        plt.xlabel('N - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
@@ -952,8 +970,63 @@ def create_calibration_comparison_plots(df, actual_matrix_sizes, target_kernels,
         save_plot(base_filename, format=OUTPUT_FORMAT)
         plt.close()
 
+def plot_tiled_vs_pairwise_std(df, actual_matrix_sizes):
+    """Standard deviation of |C-C_ref| for tiled vs tiled_pairwise across matrix sizes."""
+
+    os.makedirs("plots", exist_ok=True)
+
+    # Get data for both kernels
+    tiled_data = df[df['kernel_type'] == 'tiled'].copy()
+    pairwise_data = df[df['kernel_type'] == 'tiled_pairwise'].copy()
+
+    if tiled_data.empty or pairwise_data.empty:
+        print("Warning: Missing data for tiled or tiled_pairwise kernels")
+        return
+
+    # Sort by matrix size
+    tiled_data = tiled_data.sort_values('matrix_size')
+    pairwise_data = pairwise_data.sort_values('matrix_size')
+
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+
+    # Plot standard deviation of |C-C_ref| for both kernels using the actual std field
+    plt.semilogy(tiled_data['matrix_size'], tiled_data['|C-C_ref|/(|A||B|)_std'],
+                'o-', color='green', linewidth=LINE_WIDTH, markersize=MARKER_SIZE,
+                label='Tiled', fillstyle='none')
+    plt.semilogy(pairwise_data['matrix_size'], pairwise_data['|C-C_ref|/(|A||B|)_std'],
+                's-', color='green', linewidth=LINE_WIDTH, markersize=MARKER_SIZE,
+                label='Tiled Pairwise', fillstyle='none')
+
+    # Format the plot
+    axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+    plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+    plt.ylabel(r'$\sigma(E_{AB})$', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+    plt.legend(fontsize=LEGEND_FONTSIZE)
+    plt.grid(True, alpha=0.3)
+
+    # Set x-axis to show only powers of 2
+    tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
+    plt.xticks(tick_positions, tick_labels)
+
+    plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+    if TICK_LABEL_BOLD:
+        ax = plt.gca()
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_weight('bold')
+
+    plt.tight_layout()
+
+    # Save the plot
+    base_filename = "plots/tiled_vs_pairwise_std_comparison"
+    save_plot(base_filename, format=OUTPUT_FORMAT)
+    plt.close()
+
+    print(f"Created std comparison: tiled_vs_pairwise_std_comparison.{OUTPUT_FORMAT}")
+
+# Add this call to your main() function, after the existing plots:
 def main():
-    print("Simple Beta Ratio Plotting")
+    print("Beta Ratio Plotting")
     print("=" * 30)
 
     # Load data
@@ -1014,6 +1087,9 @@ def main():
     # Pairwise algorithms: cutlass_splitk_pairwise and tiled_pairwise
     pairwise_kernels = ['cutlass_splitk_pairwise', 'tiled_pairwise']
     create_calibration_comparison_plots(df, actual_matrix_sizes, pairwise_kernels, "calibration_pairwise")
+
+    # ADD THIS NEW LINE:
+    plot_tiled_vs_pairwise_std(df, actual_matrix_sizes)
 
     print("\n✓ All plots created successfully!")
     print("Check plots/ directory for:")

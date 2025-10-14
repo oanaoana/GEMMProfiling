@@ -83,14 +83,7 @@ void check_occupancy_for_kernel(KernelType kernel_type, int n) {
         case KERNEL_TILED_MIXPREC:
             //shared_mem = 2 * TILE_SIZE * TILE_SIZE * sizeof(COMPUTE_TYPE);
             printf("Mixed precision kernel using COMPUTE_TYPE=%s (%zu bytes)\n",
-#ifdef __NVCC__
-                   // Simple type name detection for common types
-                   (sizeof(COMPUTE_TYPE) == 4) ? "float" :
-                   (sizeof(COMPUTE_TYPE) == 2) ? "half/bf16" : "unknown",
-#else
-                   "configured",
-#endif
-                   sizeof(COMPUTE_TYPE));
+                   getComputeTypeString(), sizeof(COMPUTE_TYPE));
             check_kernel_occupancy(kernel_ptr, kernel_name,
                                   total_threads_per_block,
                                   actual_shared_mem);
@@ -99,13 +92,7 @@ void check_occupancy_for_kernel(KernelType kernel_type, int n) {
         case KERNEL_TILED_PAIRWISE_MIXPREC:
             //shared_mem = 2 * TILE_SIZE * TILE_SIZE * sizeof(COMPUTE_TYPE);
             printf("Mixed precision pairwise kernel using COMPUTE_TYPE=%s (%zu bytes)\n",
-#ifdef __NVCC__
-                   (sizeof(COMPUTE_TYPE) == 4) ? "float" :
-                   (sizeof(COMPUTE_TYPE) == 2) ? "half/bf16" : "unknown",
-#else
-                   "configured",
-#endif
-                   sizeof(COMPUTE_TYPE));
+                   getComputeTypeString(), sizeof(COMPUTE_TYPE));
             check_kernel_occupancy(kernel_ptr, kernel_name,
                                   total_threads_per_block,
                                   actual_shared_mem);
@@ -175,9 +162,16 @@ void runBenchmark(int n, KernelType kernel_type,
     printf(" done\n");
 
     // MULTIPLE TIMED RUNS
-    int num_runs = (n < 1024) ? 10 : 5;  // At least 5 runs for N=1024
+    // Adaptive sampling until you get stable results
+    int num_runs = (n < 1024) ? 15 : 10;
+    int max_runs = (n < 1024) ? 25 : 15;
+
     float total_time = 0.0f;
-    float run_times[10];  // Fixed array size for safety
+    float* run_times = (float*)malloc(max_runs * sizeof(float));
+    if (!run_times) {
+        printf("Error: Could not allocate memory for run times\n");
+        return;
+    }
 
     for (int run = 0; run < num_runs; run++) {
         cudaEventRecord(start);
@@ -199,6 +193,33 @@ void runBenchmark(int n, KernelType kernel_type,
         total_time += run_time;
 
         printf("  Run %d: %.2f ms\n", run + 1, run_time);
+
+        // Check stability after minimum runs
+        if (run >= (num_runs - 1)) {
+            // Calculate coefficient of variation
+            float average_time = total_time / (run + 1);
+            float variance = 0.0f;
+            for (int i = 0; i <= run; i++) {
+                float diff = run_times[i] - average_time;
+                variance += diff * diff;
+            }
+            variance /= (run + 1);
+            float cv = (sqrtf(variance) / average_time) * 100.0f;
+
+            // If CV < 2% and we have enough samples, stop
+            if (cv < 2.0f && run >= (num_runs - 1)) {
+                printf("  Converged after %d runs (CV: %.1f%%)\n", run + 1, cv);
+                num_runs = run + 1;
+                total_time = 0.0f;
+                for (int i = 0; i < num_runs; i++) total_time += run_times[i];
+                break;
+            }
+
+            // If we haven't converged but reached max runs, continue
+            if (run < max_runs - 1 && cv >= 2.0f) {
+                num_runs = run + 2;  // Add one more run
+            }
+        }
     }
 
     // Use AVERAGE time
@@ -242,6 +263,7 @@ void runBenchmark(int n, KernelType kernel_type,
     // Cleanup
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+    free(run_times);
 }
 
 void initialize_benchmark_matrices(float* h_A, float* h_B, float* h_C, int n) {
@@ -260,9 +282,9 @@ void runKernelPerformance(KernelType kernel_type, int n) {
     printf("=== Kernel Performance Test ===\n");
     printf("Kernel: %s, Size: %dx%d\n", kernel_name, n, n);
     printf("Using COMPUTE_TYPE: %s (%zu bytes per element)\n",
-           (sizeof(COMPUTE_TYPE) == 4) ? "float" :
-           (sizeof(COMPUTE_TYPE) == 2) ? "half/bf16" : "unknown",
-           sizeof(COMPUTE_TYPE));
+           getComputeTypeString(), sizeof(COMPUTE_TYPE));
+    printf("Using ACCUMULATE_TYPE: %s (%zu bytes per element)\n",
+           getAccumulateTypeString(), sizeof(ACCUMULATE_TYPE));
 
     // Allocate memory based on COMPUTE_TYPE
     size_t size = n * n * sizeof(COMPUTE_TYPE);
@@ -300,10 +322,19 @@ void runKernelPerformance(KernelType kernel_type, int n) {
     cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_C, h_C, size, cudaMemcpyHostToDevice);
 
-    // Open output file
-    FILE* dataFile = fopen("data/roofline_data.csv", "w");
+    // Create descriptive filename
+    char filename[256];
+    snprintf(filename, sizeof(filename), "data/perf_%s_%d_%s.dat",
+             kernel_name, n, getComputeTypeString());
+
+    printf("Writing performance data to: %s\n", filename);
+
+    // Open output file with descriptive name
+    FILE* dataFile = fopen(filename, "w");
     if (dataFile) {
         fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
+    } else {
+        printf("Warning: Could not open %s for writing\n", filename);
     }
 
     // Run the benchmark - need to cast back to float* for runBenchmark compatibility
@@ -315,6 +346,9 @@ void runKernelPerformance(KernelType kernel_type, int n) {
         printf("Warning: runBenchmark currently only supports float matrices\n");
         printf("Need to implement templated runBenchmark for COMPUTE_TYPE\n");
     }
+
+    // Check occupancy for the selected kernel
+    assess_kernel_resources(kernel_type, n);
 
     // Clean up
     if (dataFile) fclose(dataFile);
@@ -334,85 +368,18 @@ void assess_kernel_resources(KernelType kernel_type, int n) {
     printf("\n=== Kernel Resource Assessment ===\n");
     printf("Kernel: %s, Matrix Size: %dx%d\n", kernelTypeToString(kernel_type), n, n);
 
-    cudaFuncAttributes attr = {0}; // Initialize to zero
-    cudaError_t err = cudaErrorInvalidDeviceFunction; // Default to error state
+    // Get kernel attributes (keep this part)
+    void* kernel_ptr = get_kernel_function_pointer(kernel_type);
 
-    // Note: For CUTLASS kernels, we can't easily get function pointers since they're template-generated
-    // This function will focus on the kernels we can assess directly
-    switch(kernel_type) {
-        case KERNEL_NAIVE:
-            err = cudaFuncGetAttributes(&attr, matmul_naive);
-            if (err != cudaSuccess) {
-                printf("  Error getting naive kernel attributes: %s\n", cudaGetErrorString(err));
-            }
-            break;
-
-        case KERNEL_TILED:
-            err = cudaFuncGetAttributes(&attr, matmul_tiled);
-            if (err != cudaSuccess) {
-                printf("  Error getting tiled kernel attributes: %s\n", cudaGetErrorString(err));
-            }
-            break;
-
-        case KERNEL_TILED_OPT:
-            err = cudaFuncGetAttributes(&attr, matmul_tiled_opt);
-            if (err != cudaSuccess) {
-                printf("  Error getting tiled optimized kernel attributes: %s\n", cudaGetErrorString(err));
-            }
-            break;
-
-        case KERNEL_TILED_PAIRWISE:
-            err = cudaFuncGetAttributes(&attr, matmul_tiled_pairwise);
-            if (err != cudaSuccess) {
-                printf("  Error getting tiled pairwise kernel attributes: %s\n", cudaGetErrorString(err));
-            }
-            break;
-
-        case KERNEL_TILED_RECT:
-            err = cudaFuncGetAttributes(&attr, matmul_tiled_rectangular);
-            if (err != cudaSuccess) {
-                printf("  Error getting tiled rectangular kernel attributes: %s\n", cudaGetErrorString(err));
-            }
-            break;
-
-        case KERNEL_CUTLASS_SPLITK_FLAT:
-            printf("  Note: CUTLASS Split-K Flat uses template-generated kernels\n");
-            printf("  Resource usage depends on CUTLASS template instantiation\n");
-            printf("  Cannot retrieve detailed attributes for template kernels\n");
-            break;
-
-        case KERNEL_CUTLASS_SPLITK_PAIRWISE:
-            printf("  Note: CUTLASS Split-K Pairwise uses template-generated kernels\n");
-            printf("  Resource usage depends on CUTLASS template instantiation\n");
-            printf("  Cannot retrieve detailed attributes for template kernels\n");
-            break;
-
-        case KERNEL_CUBLAS:
-        case KERNEL_CUBLAS_TENSOR:
-            printf("  Note: cuBLAS kernels are proprietary and cannot be assessed\n");
-            break;
-
-        case KERNEL_CUTLASS:
-        case KERNEL_CUTLASS_TENSOR:
-            printf("  Note: CUTLASS kernels use template-generated code\n");
-            printf("  Resource usage depends on CUTLASS template instantiation\n");
-            printf("  Cannot retrieve detailed attributes for template kernels\n");
-            break;
-
-        case KERNEL_TILED_MIXPREC:
-            printf("  Note: Mixed precision kernel uses compile-time type configuration\n");
-            printf("  Current types: COMPUTE_TYPE=%s, ACCUMULATE_TYPE=%s\n",
-                   // You might want to add type name macros to your config
-                   "configured at build time", "configured at build time");
-            // Can't get attributes for template kernel easily
-            break;
-
-        default:
-            printf("  Unknown kernel type\n");
-            break;
+    if (kernel_ptr == nullptr) {
+        printf("  Note: Library kernel (cuBLAS/CUTLASS) - attributes not available\n");
+        printf("  Cannot retrieve detailed attributes for library kernels\n");
+        return;
     }
 
-    // Only show kernel attributes if we successfully retrieved them
+    cudaFuncAttributes attr = {0};
+    cudaError_t err = cudaFuncGetAttributes(&attr, kernel_ptr);
+
     if (err == cudaSuccess) {
         printf("  Kernel Resource Details:\n");
         printf("    Registers per thread: %d\n", attr.numRegs);
@@ -422,81 +389,40 @@ void assess_kernel_resources(KernelType kernel_type, int n) {
         printf("    Local memory per thread: %zu bytes\n", attr.localSizeBytes);
     }
 
-    // Calculate theoretical occupancy for this kernel
+    // Get launch configuration
     dim3 threadsPerBlock, numBlocks;
     compute_kernel_dimensions_dispatch(kernel_type, n, &threadsPerBlock, &numBlocks);
+    int total_threads_per_block = threadsPerBlock.x * threadsPerBlock.y;
 
     printf("  Launch configuration:\n");
     printf("    Threads per block: %d x %d = %d\n",
-           threadsPerBlock.x, threadsPerBlock.y, threadsPerBlock.x * threadsPerBlock.y);
+           threadsPerBlock.x, threadsPerBlock.y, total_threads_per_block);
     printf("    Grid size: %d x %d = %d blocks\n",
            numBlocks.x, numBlocks.y, numBlocks.x * numBlocks.y);
     printf("    Total threads: %d\n",
-           (numBlocks.x * numBlocks.y) * (threadsPerBlock.x * threadsPerBlock.y));
+           (numBlocks.x * numBlocks.y) * total_threads_per_block);
 
-    // Calculate and report occupancy for native CUDA kernels
+    // REUSE your occupancy function instead of duplicating code
+    printf("  Occupancy Analysis:\n");
     if (err == cudaSuccess) {
+        check_kernel_occupancy(kernel_ptr, kernelTypeToString(kernel_type),
+                              total_threads_per_block, attr.sharedSizeBytes);
+
+        // Add the limiting factors analysis (this is the extra value)
         int device;
         cudaGetDevice(&device);
         cudaDeviceProp prop;
         cudaGetDeviceProperties(&prop, device);
 
-        int maxActiveBlocks = 0;
-        int threadsPerBlockTotal = threadsPerBlock.x * threadsPerBlock.y;
-        size_t sharedMemPerBlock = attr.sharedSizeBytes;
+        int max_blocks_by_threads = prop.maxThreadsPerMultiProcessor / total_threads_per_block;
+        int max_blocks_by_sm_limit = prop.maxBlocksPerMultiProcessor;
 
-        // Calculate occupancy based on the specific kernel
-        void* kernel_ptr = nullptr;
-        switch(kernel_type) {
-            case KERNEL_NAIVE:
-                kernel_ptr = (void*)matmul_naive;
-                break;
-            case KERNEL_TILED:
-                kernel_ptr = (void*)matmul_tiled;
-                break;
-            case KERNEL_TILED_OPT:
-                kernel_ptr = (void*)matmul_tiled_opt;
-                break;
-            case KERNEL_TILED_PAIRWISE:
-                kernel_ptr = (void*)matmul_tiled_pairwise;
-                break;
-            case KERNEL_TILED_RECT:
-                kernel_ptr = (void*)matmul_tiled_rectangular;
-                break;
-            default:
-                kernel_ptr = nullptr;
-                break;
-        }
-
-        if (kernel_ptr != nullptr) {
-            cudaError_t occ_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-                &maxActiveBlocks, kernel_ptr, threadsPerBlockTotal, sharedMemPerBlock);
-
-            if (occ_err == cudaSuccess) {
-                int activeThreadsPerSM = maxActiveBlocks * threadsPerBlockTotal;
-                double occupancy_percent = (activeThreadsPerSM * 100.0) / prop.maxThreadsPerMultiProcessor;
-
-                printf("  Occupancy Analysis:\n");
-                printf("    Max threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
-                printf("    Max blocks per SM: %d\n", prop.maxBlocksPerMultiProcessor);
-                printf("    Active blocks per SM: %d\n", maxActiveBlocks);
-                printf("    Active threads per SM: %d\n", activeThreadsPerSM);
-                printf("    Theoretical occupancy: %.1f%%\n", occupancy_percent);
-
-                // Calculate limiting factors
-                int max_blocks_by_threads = prop.maxThreadsPerMultiProcessor / threadsPerBlockTotal;
-                int max_blocks_by_sm_limit = prop.maxBlocksPerMultiProcessor;
-
-                printf("    Limiting factors:\n");
-                printf("      Max blocks by thread limit: %d\n", max_blocks_by_threads);
-                printf("      Max blocks by SM limit: %d\n", max_blocks_by_sm_limit);
-                if (sharedMemPerBlock > 0) {
-                    int max_blocks_by_shared_mem = prop.sharedMemPerMultiprocessor / sharedMemPerBlock;
-                    printf("      Max blocks by shared memory: %d\n", max_blocks_by_shared_mem);
-                }
-            } else {
-                printf("  Occupancy Analysis: Error calculating occupancy: %s\n", cudaGetErrorString(occ_err));
-            }
+        printf("    Limiting factors:\n");
+        printf("      Max blocks by thread limit: %d\n", max_blocks_by_threads);
+        printf("      Max blocks by SM limit: %d\n", max_blocks_by_sm_limit);
+        if (attr.sharedSizeBytes > 0) {
+            int max_blocks_by_shared_mem = prop.sharedMemPerMultiprocessor / attr.sharedSizeBytes;
+            printf("      Max blocks by shared memory: %d\n", max_blocks_by_shared_mem);
         }
     }
 

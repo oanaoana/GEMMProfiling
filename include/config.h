@@ -52,7 +52,7 @@
 
 // Multi-sample analysis configuration
 #ifndef DEFAULT_NUM_SAMPLES
-#define DEFAULT_NUM_SAMPLES 10
+#define DEFAULT_NUM_SAMPLES 80
 #endif
 
 // Error analysis reproducibility configuration
