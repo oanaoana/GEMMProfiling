@@ -27,17 +27,20 @@ void printUsage() {
     printf("  --ulp-analysis        Run ULP analysis for specific kernel/size\n");
     printf("  --tradeoff            Run trade-off analysis for specific kernel/size\n");
     printf("  --assess-resources    Assess kernel resource usage for specific kernel/size\n");
-    printf("  --per-tile            Run per-tile reference analysis for specific kernel/size/sample\n");  // Add this line
+    printf("  --per-tile            Run per-tile error analysis for a single sample (requires --sample=N)\n");  // Updated
     printf("\nOptions:\n");
     printf("  --test=NAME           Specify kernel (required for --performance, --error-analysis, --ulp-analysis, --tradeoff, --assess-resources, --per-tile)\n");
     printf("  --size=N              Specify matrix size (required for --performance, --error-analysis, --ulp-analysis, --tradeoff, --assess-resources, --per-tile)\n");
     printf("  --matrix-type=TYPE    Specify matrix type for error analysis (optional, default: wellcond)\n");
-    printf("  --sample=N            Specify sample index for per-tile analysis (optional, default: 0)\n");  // Add this line
+    printf("  --sample=N            Specify sample index for per-tile analysis (required for --per-tile, optional for others, default: 0)\n");  // Updated
     printf("  --help                Show this help\n");
     printf("\nAvailable kernels:\n");
     printf("  naive, tiled, tiled_opt, tiled_pairwise, tiled_rect\n");
     printf("  tiled_mixprec         Mixed precision kernel (uses compile-time COMPUTE_TYPE/ACCUMULATE_TYPE)\n");
     printf("  cublas, cutlass, etc.\n");
+    printf("\nNotes:\n");
+    printf("  --per-tile analyzes error distribution within individual tiles of a single matrix sample\n");
+    printf("  --error-analysis runs multi-sample statistical analysis across many random matrices\n");
 }
 
 int main(int argc, char **argv) {

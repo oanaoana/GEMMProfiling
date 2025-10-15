@@ -18,7 +18,7 @@ from pathlib import Path
 # Choose which statistics to plot (set to True/False)
 PLOT_MATRIX = False          # Plot the full matrix heatmap
 PLOT_TILE_MEANS = True      # Plot per-tile mean statistics
-PLOT_TILE_STDS = False       # Plot per-tile standard deviation statistics
+PLOT_TILE_STDS = True       # Plot per-tile standard deviation statistics
 PLOT_TILE_MINS = False       # Plot per-tile minimum statistics
 PLOT_TILE_MAXS = True       # Plot per-tile maximum statistics
 PLOT_COMBINED_TILES = False # Plot all tile stats in one 2x2 figure (old behavior)

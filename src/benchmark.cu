@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <math.h>
+#include <time.h>  // For timestamp
 
 // Generic occupancy checker for any kernel
 void check_kernel_occupancy(void* kernel_func, const char* kernel_name,
@@ -252,18 +253,47 @@ void runBenchmark(int n, KernelType kernel_type,
     double gigaFlops = (operations / (average_time / 1000.0)) / 1e9;
     double bandwidth_gbps = (mem_access_bytes / (average_time / 1000.0)) / 1e9;
 
-    printf("%s (N=%d): %.2f ms, %.2f GFLOP/s, %.2f GB/s, AI=%.2f\n",
-           name, n, average_time, gigaFlops, bandwidth_gbps, arithmetic_intensity);
+    // Add these calculations before the fprintf:
+    float min_time = run_times[0];
+    float max_time = run_times[0];
+    for (int run = 0; run < num_runs; run++) {
+        if (run_times[run] < min_time) min_time = run_times[run];
+        if (run_times[run] > max_time) max_time = run_times[run];
+    }
 
-    // Save to CSV
-    fprintf(dataFile, "%s,%d,%.2f,%.2f,%.2f,%.2f\n",
-            name, n, average_time, gigaFlops, bandwidth_gbps, arithmetic_intensity);
+    // Get timestamp
+    time_t now = time(0);
+    struct tm* timeinfo = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H:%M:%S", timeinfo);
 
+    // Get tile size
+    int tile_size = 0;
+    switch(kernel_type) {
+        case KERNEL_TILED:
+        case KERNEL_TILED_PAIRWISE:
+        case KERNEL_TILED_MIXPREC:
+        case KERNEL_TILED_PAIRWISE_MIXPREC:
+            tile_size = TILE_SIZE;
+            break;
+        case KERNEL_TILED_RECT:
+            tile_size = TILE_M; // Or format as "MxN"
+            break;
+        default:
+            tile_size = 0;
+            break;
+    }
 
-    // Cleanup
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    free(run_times);
+    // Replace the simple fprintf with enhanced version:
+    fprintf(dataFile, "%s,%d,%s,%s,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%d,%s\n",
+            name, n,                              // algorithm, size
+            getComputeTypeString(),               // compute_type
+            getAccumulateTypeString(),            // accumulate_type
+            num_runs,                             // num_runs
+            average_time, std_dev, min_time, max_time,  // timing statistics
+            gigaFlops, bandwidth_gbps, arithmetic_intensity, // performance
+            tile_size,                            // tile_size
+            timestamp);                           // timestamp
 }
 
 void initialize_benchmark_matrices(float* h_A, float* h_B, float* h_C, int n) {
@@ -324,7 +354,7 @@ void runKernelPerformance(KernelType kernel_type, int n) {
 
     // Create descriptive filename
     char filename[256];
-    snprintf(filename, sizeof(filename), "data/perf_%s_%d_%s.dat",
+    snprintf(filename, sizeof(filename), "data/perf_%s_%d_%s.csv",
              kernel_name, n, getComputeTypeString());
 
     printf("Writing performance data to: %s\n", filename);
@@ -332,7 +362,7 @@ void runKernelPerformance(KernelType kernel_type, int n) {
     // Open output file with descriptive name
     FILE* dataFile = fopen(filename, "w");
     if (dataFile) {
-        fprintf(dataFile, "algorithm,size,time_ms,gflops,bandwidth_gb,arithmetic_intensity\n");
+        fprintf(dataFile, "algorithm,size,compute_type,accumulate_type,num_runs,mean_time_ms,std_dev_ms,min_time_ms,max_time_ms,gflops,bandwidth_gb,arithmetic_intensity,tile_size,timestamp\n");
     } else {
         printf("Warning: Could not open %s for writing\n", filename);
     }
