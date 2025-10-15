@@ -9,7 +9,8 @@ KERNELS=("tiled" "tiled_pairwise" "cublas" "cutlass_splitk_flat" "cutlass_splitk
 
 # Matrix types to test
 #MATRIX_TYPES=("uniform_positive" "wellcond" "illcond" "zeromean" "2powers")
-MATRIX_TYPES=("uniform_positive")
+MATRIX_TYPES=("uniform_positive" "wellcond")
 
 # Matrix sizes to test
-SIZES=(256 384 512 768 1024 1280 1536 1792 2048 3072 4096)
+#SIZES=(256 384 512 768 1024 1280 1536 1792 2048 3072 4096)
+SIZES=(256 512 1024 1536 2048 4096)

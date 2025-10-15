@@ -6,11 +6,42 @@
 # It checks existing CSV files and skips completed tests.
 # Configuration is loaded from systematic_config.sh
 #
-# Usage with screen (recommended for remote machines):
-#   screen -S gemm_analysis
-#   ./scripts/run_systematic_error_analysis_resume.sh
-#   # Press Ctrl+A then D to detach
-#   # screen -r gemm_analysis to reattach later
+
+echo "=== Systematic Error Analysis (Resume Mode) ==="
+echo ""
+
+# SCREEN SETUP (should be at the top!)
+echo "IMPORTANT: Long-running analysis detected!"
+echo ""
+if [ -z "$STY" ]; then
+    echo "⚠️  You're not in a screen session. This analysis may take hours."
+    echo ""
+    echo "RECOMMENDED: Run in screen session to avoid interruption:"
+    echo "  1. Start screen:    screen -S gemm_analysis"
+    echo "  2. Run this script: ./scripts/run_systematic_error_analysis_resume.sh"
+    echo "  3. Detach safely:   Ctrl+A then D (keeps running in background)"
+    echo "  4. Reattach later:  screen -r gemm_analysis"
+    echo ""
+    echo "SCREEN COMMANDS:"
+    echo "  screen -ls                    # List all screen sessions"
+    echo "  screen -r gemm_analysis       # Reattach to this session"
+    echo "  screen -S gemm_analysis       # Start new session named 'gemm_analysis'"
+    echo "  # Inside screen: Ctrl+A then D to detach (keeps running)"
+    echo ""
+    read -p "Continue without screen? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "To run with screen protection:"
+        echo "  screen -S gemm_analysis"
+        echo "  ./scripts/run_systematic_error_analysis_resume.sh"
+        exit 1
+    fi
+    echo "⚠️  Running without screen protection..."
+else
+    echo "✅ Running in screen session: $STY"
+fi
+echo ""
 
 # Source the configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,7 +73,7 @@ check_file_exists() {
     local kernel=$1
     local matrix_type=$2
     local size=$3
-    local filename="data/error_analysis_${kernel}_${matrix_type}_summary_n${size}.csv"
+    local filename="data/error_analysis_${kernel}_${matrix_type}_n${size}.csv"
     [ -f "$filename" ]
 }
 
@@ -133,13 +164,16 @@ echo "Time taken: ${minutes}m ${seconds}s"
 echo ""
 
 # Count total files now
-summary_files=$(find data -name "*_summary_n*.csv" | wc -l)
+summary_files=$(find data -name "*_n*.csv" | wc -l)
 echo "Total summary files in data/: $summary_files"
 
 echo ""
 echo "You can now run: python scripts/plot_beta_ratios.py"
-echo ""
-echo "Screen session commands:"
-echo "  Detach: Ctrl+A then D"
-echo "  Reattach: screen -r gemm_analysis"
-echo "  List sessions: screen -ls"
+
+# Only show screen info if we're actually in screen
+if [ -n "$STY" ]; then
+    echo "Screen session info:"
+    echo "  Current session: $STY"
+    echo "  Detach: Ctrl+A then D"
+    echo "  Reattach later: screen -r gemm_analysis"
+fi

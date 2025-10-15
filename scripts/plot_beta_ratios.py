@@ -4,7 +4,7 @@ Simple Beta Ratio Plots
 =======================
 
 Creates 15 clean plots:
-- 5 plots for E_{AB}/u (one per matrix type, 5 kernel lines, K dimension on x-axis)
+- 5 plots for E_{AB}/u_c (one per matrix type, 5 kernel lines, K dimension on x-axis)
 - 5 plots for E_{AB}/beta (one per matrix type, 5 kernel lines, K dimension on x-axis)
 - 5 plots for E_AB normalized (one per matrix type, 5 kernel lines, K dimension on x-axis)
 
@@ -27,7 +27,7 @@ OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)
 # Available types: '2powers', 'illcond', 'uniform_positive', 'wellcond', 'zeromean'
-MATRIX_TYPES = ['uniform_positive']  # Set to None for all, or list like ['2powers', 'wellcond']
+MATRIX_TYPES = ['uniform_positive', 'wellcond']  # Set to None for all, or list like ['2powers', 'wellcond']
 
 # Color scheme: 3 colors for 3 kernel families
 KERNEL_COLORS = {
@@ -112,8 +112,9 @@ def format_matrix_size_labels(sizes):
     return tick_positions, labels
 
 def load_data():
-    """Load all CSV files and return combined dataframe."""
-    csv_files = glob.glob(f"{DATA_FOLDER}/error_analysis_*_*_summary_n*.csv")
+    """Load and combine CSV files with simplified type handling."""
+
+    csv_files = glob.glob(f"{DATA_FOLDER}/error_analysis_*_*_n*.csv")
 
     if not csv_files:
         print(f"No CSV files found in {DATA_FOLDER}/!")
@@ -121,37 +122,38 @@ def load_data():
 
     print(f"Found {len(csv_files)} CSV files in {DATA_FOLDER}/")
 
-    all_data = []
+    all_dfs = []
     for csv_file in csv_files:
         try:
-            # First try normal reading
             df = pd.read_csv(csv_file)
-            all_data.append(df)
-        except pd.errors.EmptyDataError:
-            # If that fails, read the file manually and fix the header
-            print(f"Fixing header for {csv_file}")
-            with open(csv_file, 'r') as f:
-                lines = f.readlines()
 
-            # The header is split across first two lines, combine them
-            if len(lines) >= 2 and lines[1].startswith(','):
-                header_line = lines[0].strip() + lines[1].strip()
-                # Remove the data lines that start with the matrix type
-                data_lines = [line for line in lines[2:] if not line.strip().startswith(',')]
+            # Verify required columns exist (much simpler now!)
+            required_columns = ['E_{AB}/beta', 'E_{AB}/u_c', '|C-C_ref|/(|A||B|)_avg',
+                              '|C-C_ref|/(|A||B|)_std', 'kernel_type', 'matrix_type',
+                              'matrix_size', 'UC', 'UA']
 
-                # Create a temporary fixed content
-                fixed_content = header_line + '\n' + ''.join(data_lines)
+            missing_columns = [col for col in required_columns if col not in df.columns]
 
-                # Read from the fixed content
-                from io import StringIO
-                df = pd.read_csv(StringIO(fixed_content))
-                all_data.append(df)
-            else:
-                print(f"Cannot fix header for {csv_file}, skipping...")
+            if missing_columns:
+                print(f"Warning: Missing columns in {csv_file}: {missing_columns}")
+                print(f"Available columns: {list(df.columns)}")
                 continue
 
-    combined_df = pd.concat(all_data, ignore_index=True)
-    print(f"Loaded {len(combined_df)} test results")
+            all_dfs.append(df)
+            print(f"Loaded {len(df)} rows from {csv_file}")
+
+        except Exception as e:
+            print(f"Error reading {csv_file}: {e}")
+            continue
+
+    if not all_dfs:
+        print("No valid CSV files found!")
+        return pd.DataFrame()
+
+    # Combine all dataframes
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    print(f"Combined total: {len(combined_df)} rows")
+
     return combined_df
 
 def create_beta_plots(df, actual_matrix_sizes):
@@ -169,7 +171,7 @@ def create_beta_plots(df, actual_matrix_sizes):
     print(f"Using kernel color mapping: {KERNEL_COLORS}")
     print(f"Using kernel marker mapping: {KERNEL_MARKERS}")
 
-    # 1. Create 5 plots for E_{AB}/u
+    # 1. Create 5 plots for E_{AB}/u_c
     for matrix_type in matrix_types:
         plt.figure(figsize=(10, 6))
 
@@ -182,7 +184,7 @@ def create_beta_plots(df, actual_matrix_sizes):
             if len(subset) > 0:
                 # Sort by matrix size
                 subset = subset.sort_values('matrix_size')
-                y_values = subset['E_{AB}/u']
+                y_values = subset['E_{AB}/u_c']
                 all_y_values.extend(y_values)
                 color = KERNEL_COLORS[kernel]
                 marker = KERNEL_MARKERS[kernel]
@@ -191,7 +193,7 @@ def create_beta_plots(df, actual_matrix_sizes):
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
         axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-        y_label_text = r'$\mathbf{E_{AB} / u}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u$'
+        y_label_text = r'$\mathbf{E_{AB} / u_c}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u_c$'
 
         plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
         plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
@@ -496,7 +498,7 @@ def create_single_kernel_deff_plot(df, actual_matrix_sizes, kernel_name):
         subset = subset.sort_values('matrix_size')
 
         # Compute effective depth from experimental data
-        E_over_u = subset['E_{AB}/u'].values
+        E_over_u = subset['E_{AB}/u_c'].values
         E_over_beta = subset['E_{AB}/beta'].values
         deff_experimental = effective_depth(E_over_u, E_over_beta)
 
@@ -612,7 +614,7 @@ def deff_all_kernels(df, actual_matrix_sizes):
             subset = subset.sort_values('matrix_size')
 
             # Compute effective depth from experimental data
-            E_over_u = subset['E_{AB}/u'].values
+            E_over_u = subset['E_{AB}/u_c'].values
             E_over_beta = subset['E_{AB}/beta'].values
             deff_experimental = effective_depth(E_over_u, E_over_beta)
 
@@ -701,7 +703,7 @@ def create_uncertainty_band_plots(df, actual_matrix_sizes):
                 subset = subset.sort_values('matrix_size')
 
                 # Get mean, p10, and p95 for E/u ratios
-                mean_values = subset['E_{AB}/u'].values
+                mean_values = subset['E_{AB}/u_c'].values
 
                 # The percentiles are already in the same units as the averages
                 # E_{AB}/u = normalized_error_avg / u32
@@ -791,7 +793,7 @@ def create_spread_cloud_plots(df, actual_matrix_sizes):
                 subset = subset.sort_values('matrix_size')
 
                 # Get mean values for E/u ratios
-                mean_values = subset['E_{AB}/u'].values
+                mean_values = subset['E_{AB}/u_c'].values
 
                 u32 = 2.0**-24  # unit roundoff
                 p10_eu = subset['|C-C_ref|/(|A||B|)_p10'].values / u32
@@ -883,7 +885,7 @@ def create_calibration_comparison_plots(df, actual_matrix_sizes, target_kernels,
             subset = subset.sort_values('matrix_size')
 
             # Get experimental E/u values
-            experimental_E_over_u = subset['E_{AB}/u'].values
+            experimental_E_over_u = subset['E_{AB}/u_c'].values
             experimental_E_over_beta = subset['E_{AB}/beta'].values
             log_c_hat_median_values = subset['log_c_hat_median'].values
 
@@ -1026,16 +1028,29 @@ def plot_tiled_vs_pairwise_std(df, actual_matrix_sizes):
 
 # Add this call to your main() function, after the existing plots:
 def main():
-    print("Beta Ratio Plotting")
-    print("=" * 30)
+    print("Beta Ratio Plotting with Simplified Type Handling")
+    print("=" * 50)
 
     # Load data
     df = load_data()
     if df.empty:
         return
 
+    # DEBUG: Show what compute/accumulate types we have
+    if 'UC' in df.columns and 'UA' in df.columns:
+        unique_uc = sorted(df['UC'].unique())
+        unique_ua = sorted(df['UA'].unique())
+        print(f"Compute types found (UC): {unique_uc}")
+        print(f"Accumulate types found (UA): {unique_ua}")
+
+        # Show type combinations
+        type_combos = df[['UC', 'UA']].drop_duplicates()
+        print("Type combinations:")
+        for _, row in type_combos.iterrows():
+            print(f"  UC={row['UC']}, UA={row['UA']}")
+
     # Check required columns (including new p10 percentiles)
-    required_cols = ['E_{AB}/beta', 'E_{AB}/u', '|C-C_ref|/(|A||B|)_avg', '|C-C_ref|/(|A||B|)_p10', '|C-C_ref|/(|A||B|)_p95', 'kernel_type', 'matrix_type', 'matrix_size']
+    required_cols = ['E_{AB}/beta', 'E_{AB}/u_c', '|C-C_ref|/(|A||B|)_avg', '|C-C_ref|/(|A||B|)_p10', '|C-C_ref|/(|A||B|)_p95', 'kernel_type', 'matrix_type', 'matrix_size']
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         print(f"Missing columns: {missing}")
