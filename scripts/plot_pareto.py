@@ -11,19 +11,21 @@ import glob
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator
 import warnings
 warnings.filterwarnings('ignore')
 
 # Configuration copied from plot_beta_ratios.py
 DATA_FOLDER = "data"
 PLOTS_FOLDER = "plots"
-OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
+OUTPUT_FORMAT = "both"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)
 MATRIX_TYPES = ['uniform_positive', 'wellcond']  # Set to None for all
 KERNELS = None  # Set to None for all, or list like ['tiled', 'cublas']
 SIZES = None    # Set to None for all, or list like [256, 512, 1024]
-ERROR_METRIC = '|C-C_ref|/(|A||B|)_avg'  # Choose: '|C-C_ref|/(|A||B|)_avg' or 'E_{AB}/u_c'
+# ERROR_METRIC = '|C-C_ref|/(|A||B|)_avg'  # Choose: '|C-C_ref|/(|A||B|)_avg' or 'E_{AB}/u_c'
+ERROR_METRIC = 'E_{AB}/u_c'
 
 # Color scheme: 3 colors for 3 kernel families
 KERNEL_COLORS = {
@@ -182,26 +184,16 @@ def format_matrix_size_labels_readable(sizes):
     return tick_positions, labels
 
 def format_gflops_labels(gflops_values):
-    """Format GFLOPS labels to show values like 5×10³ instead of 5000."""
+    """Format GFLOPS labels normally without scientific notation."""
     labels = []
     tick_positions = []
 
     for gflops in sorted(set(gflops_values)):
-        if gflops >= 1000:
-            # Convert to thousands format
-            thousands = gflops / 1000
-            if thousands == int(thousands):
-                # For whole numbers
-                thousands = int(thousands)
-                if thousands == 1:
-                    labels.append(r'$1 \times 10^3$')
-                else:
-                    labels.append(fr'${thousands} \times 10^3$')
-            else:
-                # For decimals, show with one decimal place
-                labels.append(fr'${thousands:.1f} \times 10^3$')
-        else:
+        # Just show the number as-is
+        if gflops == int(gflops):
             labels.append(str(int(gflops)))
+        else:
+            labels.append(f'{gflops:.1f}')
 
         tick_positions.append(gflops)
 
@@ -236,6 +228,15 @@ def create_pareto_plots_per_matrix_type(df):
         # Create the plot
         plt.figure(figsize=(10, 8))
 
+        # Calculate marker sizes based on matrix size
+        all_sizes = matrix_df['matrix_size'].unique()
+        min_size = all_sizes.min()
+        max_size = all_sizes.max()
+
+        # Scale marker sizes between 20 and 200 (adjust these values as needed)
+        min_marker_size = 20
+        max_marker_size = 300
+
         # Plot each kernel
         kernels = sorted(matrix_df['kernel_type'].unique())
 
@@ -249,74 +250,84 @@ def create_pareto_plots_per_matrix_type(df):
             x_data = kernel_df['gflops']
             y_data = kernel_df[ERROR_METRIC]
 
+            # Calculate marker sizes proportional to matrix size
+            marker_sizes = []
+            for size in kernel_df['matrix_size']:
+                # Linear scaling between min and max marker sizes
+                normalized = (size - min_size) / (max_size - min_size)
+                marker_size = min_marker_size + normalized * (max_marker_size - min_marker_size)
+                marker_sizes.append(marker_size)
+
             plt.scatter(
                 x_data, y_data,
                 color=get_kernel_color(kernel),
                 marker=get_kernel_marker(kernel),
-                s=100,
+                s=marker_sizes,  # Use calculated marker sizes
                 alpha=0.8,
                 label=get_kernel_label(kernel),
                 edgecolors='black',
                 linewidth=0.5
             )
 
-            # Add size annotations for each point
-            for _, row in kernel_df.iterrows():
-                plt.annotate(
-                    f"{int(row['matrix_size'])}",
-                    (row['gflops'], row[ERROR_METRIC]),
-                    xytext=(5, 5),
-                    textcoords='offset points',
-                    fontsize=8,
-                    alpha=0.7
-                )
+        # Use log scale for error (y-axis)
+        ax = plt.gca()
+        ax.set_yscale('log')
+
+        # Set major ticks at each power of ten
+        ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
+        # Get actual y-axis data range
+        y_min = matrix_df[ERROR_METRIC].min()
+        y_max = matrix_df[ERROR_METRIC].max()
+
+        y_min = 10**np.floor(np.log10(y_min))
+        y_max = 10**np.ceil(np.log10(y_max))
+        ax.set_ylim(y_min, y_max)
+
+        # Grid
+        plt.grid(True, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
+
+        # Let matplotlib choose x-axis ticks automatically
+        plt.tick_params(labelsize=TICK_LABELSIZE)
+        # If x_data is in TFLOPS
+        tick_positions = ax.get_xticks()
+        tick_positions = [x for x in tick_positions if x >= 0]
+        tick_labels = [f"{int(round(x/1000))}" for x in tick_positions]  # Convert GFLOPS to TFLOPS
+
+        plt.xticks(tick_positions, tick_labels)
 
         # Formatting
-        plt.xlabel('Performance (GFLOPS)',
+        plt.xlabel('Performance (TFLOPS)',
                    fontsize=AXIS_LABEL_FONTSIZE,
                    weight='bold' if AXIS_LABEL_BOLD else 'normal')
 
         # Format y-axis label based on error metric
         if ERROR_METRIC == '|C-C_ref|/(|A||B|)_avg':
-            y_label = r'$\mathbf{E_{AB}}$' if AXIS_LABEL_BOLD else r'$E_{AB}$'
-        else:  # E_{AB}/u_c
-            y_label = r'$\mathbf{E_{AB}/u_c}$' if AXIS_LABEL_BOLD else r'$E_{AB}/u_c$'
+            y_label = r'$E_{AB}$'
+        elif ERROR_METRIC == 'E_{AB}/u_c':
+            y_label = r'$E_{AB}/u_c$'
+        else:
+            # For any other metric, use the column name directly
+            y_label = ERROR_METRIC
 
         plt.ylabel(y_label,
                    fontsize=AXIS_LABEL_FONTSIZE,
                    weight='bold' if AXIS_LABEL_BOLD else 'normal')
 
-        # Use log scale for error (y-axis)
-        plt.yscale('log')
-
-        # Title
+         # Title
         title_text = f'Performance vs Accuracy - {matrix_type.replace("_", " ").title()}'
         plt.title(title_text,
                   fontsize=TITLE_FONTSIZE,
                   weight='bold' if TITLE_BOLD else 'normal')
 
-        # Legend
-        plt.legend(fontsize=LEGEND_FONTSIZE,
-                   prop={'weight': 'bold' if LEGEND_BOLD else 'normal'})
-
-        # Grid
-        plt.grid(True, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
-
-        # Tick formatting
-        plt.tick_params(labelsize=TICK_LABELSIZE)
-
-        # Format x-axis ticks to be more readable
-        if SIZES is not None and all(size in SIZES for size in matrix_df['matrix_size']):
-            tick_positions, tick_labels = format_matrix_size_labels_readable(matrix_df['matrix_size'])
-            plt.xticks(tick_positions, tick_labels, rotation=45, ha='right', fontsize=TICK_LABELSIZE)
-        else:
-            plt.xticks(fontsize=TICK_LABELSIZE)
+        # # Legend
+        # plt.legend(fontsize=LEGEND_FONTSIZE,
+        #            prop={'weight': 'bold' if LEGEND_BOLD else 'normal'})
 
         plt.tight_layout()
 
-        # Save plot - CHANGED BACK TO "pareto"
+        # Save plot
         error_name = ERROR_METRIC.replace('|', '').replace('/', '_').replace('{', '').replace('}', '')
-        filename = f"pareto_{matrix_type}_{error_name}"  # ← FIXED: Back to "pareto"
+        filename = f"pareto_{matrix_type}_{error_name}"
         filepath = os.path.join(PLOTS_FOLDER, filename)
 
         save_plot(filepath, format=OUTPUT_FORMAT, dpi=PLOT_DPI, bbox_inches=BBOX_INCHES)
@@ -351,22 +362,19 @@ def create_roofline_plots_per_matrix_type(df):
             if kernel_df.empty:
                 continue
 
-            # Sort by matrix size for connected lines
-            kernel_df = kernel_df.sort_values('matrix_size')
-
-            # Plot performance (y) vs matrix size (x)
+            # Plot performance (y) vs matrix size (x) - MARKERS ONLY
             x_data = kernel_df['matrix_size']
             y_data = kernel_df['gflops']
 
-            plt.plot(
+            plt.scatter(  # Changed from plt.plot to plt.scatter
                 x_data, y_data,
                 color=get_kernel_color(kernel),
                 marker=get_kernel_marker(kernel),
-                markersize=MARKER_SIZE,
-                linewidth=LINE_WIDTH,
+                s=MARKER_SIZE * 10,  # Scale up marker size since no lines
+                alpha=0.8,
                 label=get_kernel_label(kernel),
-                markeredgecolor='black',
-                markeredgewidth=0.5
+                edgecolors='black',
+                linewidth=0.5
             )
 
         # Formatting
@@ -394,10 +402,10 @@ def create_roofline_plots_per_matrix_type(df):
         # Tick formatting
         plt.tick_params(labelsize=TICK_LABELSIZE)
 
-        # Format x-axis with the new scientific notation
+        # Format x-axis with powers of 2 notation
         unique_sizes = sorted(matrix_df['matrix_size'].unique())
-        tick_positions, tick_labels = format_matrix_size_labels_readable(unique_sizes)
-        plt.xticks(tick_positions, tick_labels, rotation=45, ha='right', fontsize=TICK_LABELSIZE)
+        tick_positions, tick_labels = format_matrix_size_powers_of_2(unique_sizes)
+        plt.xticks(tick_positions, tick_labels, fontsize=TICK_LABELSIZE)
 
         plt.tight_layout()
 

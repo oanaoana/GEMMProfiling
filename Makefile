@@ -27,10 +27,13 @@ $(TARGET): $(SOURCES) $(HEADERS)
 
 # Clean
 clean:
-	rm -f $(TARGET) data/*.csv data/*.dat data/*.bin
+	rm -f $(TARGET)
+
+cldata:
+	rm -rf data/*.csv data/*.dat data/*.bin
 
 help:
-	@echo "Usage: make [clean|help]"
+	@echo "Usage: make [clean|cldata|help]"
 	@echo "Configure precision types in include/config.h"
 	@echo "Example: ./main --error-analysis --test=tiled_mixprec --size=1024"
 

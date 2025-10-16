@@ -294,6 +294,8 @@ void runBenchmark(int n, KernelType kernel_type,
             gigaFlops, bandwidth_gbps, arithmetic_intensity, // performance
             tile_size,                            // tile_size
             timestamp);                           // timestamp
+
+    printf("Debug timing: average_time = %.6f, operations = %.2e\n", average_time, operations);
 }
 
 void initialize_benchmark_matrices(float* h_A, float* h_B, float* h_C, int n) {
