@@ -12,16 +12,16 @@ __global__ void matmul_tiled_rectangular(float *A, float *B, float *C, int N);
 __global__ void matmul_tiled_square(float *A, float *B, float *C, int N, int tile_size);
 template <typename ComputeType, typename AccumulateType>
 __global__ void matmul_tiled_mixprec(
-    const AccumulateType* __restrict__ A,
-    const AccumulateType* __restrict__ B,
-    AccumulateType* __restrict__ C,
+    const ComputeType* __restrict__ A,       // CORRECT - inputs in ComputeType
+    const ComputeType* __restrict__ B,       // CORRECT - inputs in ComputeType
+    AccumulateType* __restrict__ C,          // CORRECT - output in AccumulateType
     int N);
 
 template <typename ComputeType, typename AccumulateType>
 __global__ void matmul_tiled_pairwise_mixprec(
-    const AccumulateType* __restrict__ A,
-    const AccumulateType* __restrict__ B,
-    AccumulateType* __restrict__ C,
+    const ComputeType* __restrict__ A,       // CORRECT - inputs in ComputeType
+    const ComputeType* __restrict__ B,       // CORRECT - inputs in ComputeType
+    AccumulateType* __restrict__ C,          // CORRECT - output in AccumulateType
     int N);
 
 // Kernel launch wrappers - all with consistent signature for benchmark
@@ -31,8 +31,12 @@ void launch_tiled_opt(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, di
 void launch_tiled_pairwise(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled_rect(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 void launch_tiled_rectangular(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
-void launch_tiled_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
-void launch_tiled_pairwise_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+// Mixed precision kernel launches
+template<typename ComputeType, typename AccumulateType>
+void launch_tiled_mixprec(ComputeType* d_A, ComputeType* d_B, AccumulateType* d_C, int n, dim3 blocks, dim3 threads);
+
+template<typename ComputeType, typename AccumulateType>
+void launch_tiled_pairwise_mixprec(ComputeType* d_A, ComputeType* d_B, AccumulateType* d_C, int n, dim3 blocks, dim3 threads);
 
 // cuBLAS wrappers - need to be adapted to consistent signature
 void launch_cublas(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);

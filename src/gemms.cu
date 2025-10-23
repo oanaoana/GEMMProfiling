@@ -890,8 +890,8 @@ __device__ __forceinline__ AccumType mixprec_fma(ComputeType a, ComputeType b, A
 
 template <typename ComputeType, typename AccumulateType>
 __global__ void matmul_tiled_mixprec(
-    const AccumulateType* __restrict__ A,
-    const AccumulateType* __restrict__ B,
+    const ComputeType* __restrict__ A,
+    const ComputeType* __restrict__ B,
     AccumulateType* __restrict__ C,
     int N)
 {
@@ -939,12 +939,9 @@ __global__ void matmul_tiled_mixprec(
 }
 
 // Then your launch function
-void launch_tiled_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
-    // Direct template instantiation - COMPUTE_TYPE and ACCUMULATE_TYPE are replaced at preprocessing
-    matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE><<<blocks, threads>>>(
-        reinterpret_cast<const ACCUMULATE_TYPE*>(d_A),
-        reinterpret_cast<const ACCUMULATE_TYPE*>(d_B),
-        reinterpret_cast<ACCUMULATE_TYPE*>(d_C), n);
+template <typename ComputeType, typename AccumulateType>
+void launch_tiled_mixprec(ComputeType* d_A, ComputeType* d_B, AccumulateType* d_C, int n, dim3 blocks, dim3 threads) {
+    matmul_tiled_mixprec<ComputeType, AccumulateType><<<blocks, threads>>>(d_A, d_B, d_C, n);
 }
 
 // Zero literal helpers for both float/double (and others via cast)
@@ -963,8 +960,8 @@ __device__ __forceinline__ int ceil_log2_int_gpu(int x) {
 
 template <typename ComputeType, typename AccumulateType>
 __global__ void matmul_tiled_pairwise_mixprec(
-    const AccumulateType* __restrict__ A,    // stored as AccumulateType (same as your mixed kernel)
-    const AccumulateType* __restrict__ B,
+    const ComputeType* __restrict__ A,
+    const ComputeType* __restrict__ B,
     AccumulateType* __restrict__ C,
     int N)
 {
@@ -1046,10 +1043,22 @@ __global__ void matmul_tiled_pairwise_mixprec(
 }
 
 // Launch wrapper for tiled pairwise mixed precision
-void launch_tiled_pairwise_mixprec(float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+template <typename ComputeType, typename AccumulateType>
+void launch_tiled_pairwise_mixprec(ComputeType* d_A, ComputeType* d_B, AccumulateType* d_C, int n, dim3 blocks, dim3 threads) {
     // Direct template instantiation using the configured types
-    matmul_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE><<<blocks, threads>>>(
-        reinterpret_cast<const ACCUMULATE_TYPE*>(d_A),
-        reinterpret_cast<const ACCUMULATE_TYPE*>(d_B),
-        reinterpret_cast<ACCUMULATE_TYPE*>(d_C), n);
+    matmul_tiled_pairwise_mixprec<ComputeType, AccumulateType><<<blocks, threads>>>(d_A, d_B, d_C, n);
 }
+
+// Explicit instantiations for the kernels
+template __global__ void matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+    const COMPUTE_TYPE* A, const COMPUTE_TYPE* B, ACCUMULATE_TYPE* C, int N);
+
+template __global__ void matmul_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+    const COMPUTE_TYPE* A, const COMPUTE_TYPE* B, ACCUMULATE_TYPE* C, int N);
+
+// Explicit instantiations for the launch functions
+template void launch_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+    COMPUTE_TYPE* d_A, COMPUTE_TYPE* d_B, ACCUMULATE_TYPE* d_C, int n, dim3 blocks, dim3 threads);
+
+template void launch_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+    COMPUTE_TYPE* d_A, COMPUTE_TYPE* d_B, ACCUMULATE_TYPE* d_C, int n, dim3 blocks, dim3 threads);

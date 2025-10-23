@@ -48,32 +48,31 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/systematic_config.sh"
 
 echo "Starting systematic error analysis (resume mode)..."
+echo "Configuration: UC=$COMPUTE_TYPE, UA=$ACCUMULATE_TYPE"
+echo "Data folder: $DATA_FOLDER"
 echo "This script will check existing files and only run missing tests."
 echo ""
 
-# Screen usage reminder
-if [ -z "$STY" ]; then
-    echo "TIP: You're not in a screen session. To run safely on remote machine:"
-    echo "  screen -S gemm_analysis"
-    echo "  ./scripts/run_systematic_error_analysis_resume.sh"
-    echo "  # Press Ctrl+A then D to detach"
-    echo ""
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
 # Create data directory if it doesn't exist
-mkdir -p data
+mkdir -p "$DATA_FOLDER"
+
+# Build with specified precision
+echo "Building with COMPUTE_TYPE=$COMPUTE_TYPE, ACCUMULATE_TYPE=$ACCUMULATE_TYPE..."
+make clean
+make COMPUTE_TYPE="$COMPUTE_TYPE" ACCUMULATE_TYPE="$ACCUMULATE_TYPE"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Build failed!"
+    exit 1
+fi
+echo ""
 
 # Function to check if output file exists
 check_file_exists() {
     local kernel=$1
     local matrix_type=$2
     local size=$3
-    local filename="data/error_analysis_${kernel}_${matrix_type}_n${size}.csv"
+    local filename="${DATA_FOLDER}/error_analysis_${kernel}_${matrix_type}_n${size}.csv"
     [ -f "$filename" ]
 }
 
@@ -82,7 +81,7 @@ total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
 missing_tests=0
 completed_tests=0
 
-echo "Scanning existing files..."
+echo "Scanning existing files in $DATA_FOLDER..."
 
 # Create list of missing tests
 missing_configs=()
@@ -164,14 +163,15 @@ echo "Time taken: ${minutes}m ${seconds}s"
 echo ""
 
 # Count total files now
-summary_files=$(find data -name "*_n*.csv" | wc -l)
-echo "Total summary files in data/: $summary_files"
+summary_files=$(find "$DATA_FOLDER" -name "error_analysis_*_n*.csv" | wc -l)
+echo "Total summary files in $DATA_FOLDER: $summary_files"
 
 echo ""
 echo "You can now run: python scripts/plot_beta_ratios.py"
 
 # Only show screen info if we're actually in screen
 if [ -n "$STY" ]; then
+    echo ""
     echo "Screen session info:"
     echo "  Current session: $STY"
     echo "  Detach: Ctrl+A then D"

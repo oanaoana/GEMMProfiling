@@ -44,14 +44,24 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/systematic_config.sh"
 
+echo "Running systematic error analysis (FP32 only)..."
+echo "Data folder: $DATA_FOLDER"
+# Create data folder
+mkdir -p "$DATA_FOLDER"
+
+# Build with FP32
+make clean
+make COMPUTE_TYPE="$COMPUTE_TYPE" ACCUMULATE_TYPE="$ACCUMULATE_TYPE"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Build failed. Exiting."
+    exit 1
+fi
+
 echo "Starting systematic error analysis..."
 total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
 echo "Total configurations: ${#KERNELS[@]} kernels × ${#MATRIX_TYPES[@]} matrix types × ${#SIZES[@]} sizes = $total_tests tests"
 echo "Estimated time: ~30-45 minutes"
 echo ""
-
-# Create data directory if it doesn't exist
-mkdir -p data
 
 echo "Configuration:"
 echo "  Kernels: ${KERNELS[*]}"
@@ -102,8 +112,8 @@ echo "Total time: ${minutes}m ${seconds}s"
 echo ""
 
 # Count generated files
-summary_files=$(find data -name "*_n*.csv" | wc -l)
-echo "Generated $summary_files summary files in data/ directory"
+summary_files=$(find "$DATA_FOLDER" -name "error_analysis_*_n*.csv" | wc -l)
+echo "Generated $summary_files summary files in $DATA_FOLDER directory"
 
 echo ""
 echo "Next steps:"

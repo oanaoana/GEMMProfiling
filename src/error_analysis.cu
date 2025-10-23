@@ -12,6 +12,8 @@
 #include <algorithm>  // for std::max and std::sort
 #include <string>     // for std::to_string
 #include <vector>     // for std::vector
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // Device function for atomic add with double precision
 __device__ double atomicAddDouble(double* address, double val) {
@@ -91,6 +93,14 @@ __global__ void convert_fp64_to_fp32_kernel(double* d_input, float* d_output, in
         d_output[idx] = (float)d_input[idx];
     }
 }
+// Template version that works with any input type
+template<typename T>
+__global__ void compute_matrix_abs_fp64_kernel_typed(const T* matrix, double* abs_matrix, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        abs_matrix[idx] = fabs((double)matrix[idx]);
+    }
+}
 
 __global__ void compute_matrix_abs_fp64_kernel(float* matrix, double* abs_matrix, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -99,7 +109,8 @@ __global__ void compute_matrix_abs_fp64_kernel(float* matrix, double* abs_matrix
     }
 }
 
-__global__ void compute_frobenius_error_kernel(float* C_kernel, double* C_reference,
+template<typename AccumulateType>
+__global__ void compute_frobenius_error_kernel(AccumulateType* C_kernel, double* C_reference,
                                              double* abs_AB_product, double* error_results, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_elements = n * n;
@@ -115,7 +126,7 @@ __global__ void compute_frobenius_error_kernel(float* C_kernel, double* C_refere
 
     // Each thread processes multiple elements if needed
     for (int i = idx; i < total_elements; i += blockDim.x * gridDim.x) {
-        double diff = (double)C_kernel[i] - C_reference[i];  // FP64 difference
+        double diff = (double)C_kernel[i] - C_reference[i];  // Cast to double for precision
         local_error += diff * diff;
 
         // Use the precomputed |A|*|B| product
@@ -153,6 +164,34 @@ __global__ void compute_reference_fp64_device(float* A, float* B, double* C, int
             sum += (double)A[row * n + k] * (double)B[k * n + col];
         }
         C[row * n + col] = sum;
+    }
+}
+
+// Modified reference kernel that also computes |A| * |B| on-the-fly
+template<typename ComputeType>
+__global__ void compute_reference_and_norm_fp64_device(const ComputeType* A, const ComputeType* B,
+                                                       double* C_ref, double* abs_AB_product, int n) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < n && col < n) {
+        double c_sum = 0.0;
+        double abs_sum = 0.0;
+
+        for (int k = 0; k < n; k++) {
+            double a_val = (double)A[row * n + k];
+            double b_val = (double)B[k * n + col];
+
+            // Compute reference: C = A * B
+            c_sum += a_val * b_val;
+
+            // Compute normalization: |A| * |B|
+            abs_sum += fabs(a_val) * fabs(b_val);
+        }
+
+        int idx = row * n + col;
+        C_ref[idx] = c_sum;
+        abs_AB_product[idx] = abs_sum;
     }
 }
 
@@ -531,7 +570,15 @@ void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, in
         generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
 
         // Launch the specified kernel using unified dispatch
-        launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+        if (is_mixprec_kernel(kernel_type)) {
+            launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+                kernel_type, (COMPUTE_TYPE*)d_A, (COMPUTE_TYPE*)d_B, (ACCUMULATE_TYPE*)d_C_kernel, n, numBlocks, threadsPerBlock);
+        } else if (areBothTypesFP32()) {
+            launch_basic_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+        } else {
+            printf("ERROR: Non-mixprec kernels require FP32 types\n");
+            return;
+        }
 
         // Compute FP64 reference directly on device using same configuration as test kernel
         // This ensures consistency with the cuBLAS kernel configuration from gemms.cu
@@ -716,35 +763,39 @@ __global__ void compute_EAB_entrywise(
 // - Reference: Uses standard 2D tiled configuration (kernel-independent)
 // - Helper kernels: Use standard 1D configurations (efficient for element-wise ops)
 void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible) {
-    printf("\n=== Multi-Sample Analysis ===\n");
-    printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
-           (int)matrix_type, (int)kernel_type, n, n, num_samples);
+    TypeInfo compute_info = getComputeTypeInfo();
+    TypeInfo accumulate_info = getAccumulateTypeInfo();
 
-    // Compute theoretical error bound factor
-    float beta_factor = compute_beta_factor(kernel_type, n);
-    // Allocate device memory (reused across all samples)
-    size_t size = n * n * sizeof(float);
-    float *d_A, *d_B, *d_C_kernel;
-    cudaMalloc(&d_A, size);
-    cudaMalloc(&d_B, size);
-    cudaMalloc(&d_C_kernel, size);
+    printf("=== Type Configuration ===\n");
+    printf("Compute Type: %s (%zu bytes)\n", compute_info.name, compute_info.size_bytes);
+    printf("Accumulate Type: %s (%zu bytes)\n", accumulate_info.name, compute_info.size_bytes);
+    printf("Reference Type: FP64 (8 bytes)\n");
+    printf("Matrix Type: %s\n", matrixTypeToString(matrix_type));
+    printf("==========================\n\n");
+
+    // Allocate matrices using COMPUTE_TYPE
+    size_t size_compute = n * n * sizeof(COMPUTE_TYPE);
+    COMPUTE_TYPE *d_A, *d_B;
+    ACCUMULATE_TYPE*d_C_kernel;
+
+    cudaMalloc(&d_A, size_compute);
+    cudaMalloc(&d_B, size_compute);
+    cudaMalloc(&d_C_kernel, size_compute);
+
+    // Allocate reference matrices in FP64
+    size_t size_fp64 = n * n * sizeof(double);
+    double *d_A_ref, *d_B_ref, *d_C_reference_fp64;
+
+    cudaMalloc(&d_A_ref, size_fp64);
+    cudaMalloc(&d_B_ref, size_fp64);
+    cudaMalloc(&d_C_reference_fp64, size_fp64);
 
     // Device memory for optimized error computation (no host transfers needed)
-    double *d_C_reference_fp64;  // FP64 reference result
-    double *d_A_abs, *d_B_abs;   // Absolute value matrices for norm computation (FP64)
     double *d_abs_AB_product;    // Product |A| * |B| (FP64)
     double *d_error_results;     // Error computation results [frobenius², norm²]
 
-    size_t size_fp64 = n * n * sizeof(double);
-    cudaMalloc(&d_C_reference_fp64, size_fp64);
-    cudaMalloc(&d_A_abs, size_fp64);
-    cudaMalloc(&d_B_abs, size_fp64);
     cudaMalloc(&d_abs_AB_product, size_fp64);  // For |A| * |B| product (FP64)
     cudaMalloc(&d_error_results, 2 * sizeof(double));  // [error², norm²]
-
-    // Create cuBLAS handle for |A| * |B| computation
-    cublasHandle_t cublas_handle;
-    cublasCreate(&cublas_handle);
 
     // Host memory only for final statistics (much smaller)
     double *frobenius_errors = (double*)malloc(num_samples * sizeof(double));
@@ -779,6 +830,9 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         generate_seed_array(seeds, num_samples, time_seed);
     }
 
+    // Compute theoretical error bound factor
+    float beta_factor = compute_beta_factor(kernel_type, n);
+
     // Run multiple samples
     for (int sample = 0; sample < num_samples; sample++) {
         if (sample % 10 == 0 && sample > 0) {
@@ -789,31 +843,30 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         // Use different seeds for each sample from our reproducible array
         auto seedA = seeds[sample];
         auto seedB = seedA ^ 0x94D049BB133111EBull;
-        generate_matrix_device_with_seed(d_A, n, matrix_type, seedA);
-        generate_matrix_device_with_seed(d_B, n, matrix_type, seedB);
+        generate_matrix_device_with_seed_typed<COMPUTE_TYPE>(d_A, n, matrix_type, seedA, numBlocks, threadsPerBlock);
+        generate_matrix_device_with_seed_typed<COMPUTE_TYPE>(d_B, n, matrix_type, seedB, numBlocks, threadsPerBlock);
 
         // Compute FP64 reference directly on device using same configuration as test kernel
         // This ensures consistency with the cuBLAS kernel configuration from gemms.cu
-        compute_reference_fp64_device<<<numBlocks, threadsPerBlock>>>(d_A, d_B, d_C_reference_fp64, n);
-
+        compute_reference_and_norm_fp64_device<COMPUTE_TYPE><<<numBlocks, threadsPerBlock>>>(
+            d_A, d_B, d_C_reference_fp64, d_abs_AB_product, n);
         // Launch the specified kernel using unified dispatch
-        launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
-
-        // Compute absolute value matrices on device for norm computation (convert to FP64)
-        compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_A, d_A_abs, total_elements);
-        compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_B, d_B_abs, total_elements);
-
-        // Compute |A| * |B| using cuBLAS (double precision)
-        const double alpha = 1.0, beta = 0.0;
-        cublasDgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
-                    &alpha, d_B_abs, n, d_A_abs, n, &beta, d_abs_AB_product, n);
+        if (is_mixprec_kernel(kernel_type)) {
+            launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+                kernel_type, (COMPUTE_TYPE*)d_A, (COMPUTE_TYPE*)d_B, (ACCUMULATE_TYPE*)d_C_kernel, n, numBlocks, threadsPerBlock);
+        } else if (areBothTypesFP32()) {
+            launch_basic_kernel_by_type(kernel_type, (float*)d_A, (float*)d_B, (float*)d_C_kernel, n, numBlocks, threadsPerBlock);
+        } else {
+            printf("ERROR: Non-mixprec kernels require FP32 types\n");
+            return;
+        }
 
         // Reset error accumulation array
         cudaMemset(d_error_results, 0, 2 * sizeof(double));
 
         // Compute errors entirely on device
 
-        compute_frobenius_error_kernel<<<grid_size_1d, block_size_1d, shared_mem_size>>>(
+        compute_frobenius_error_kernel<ACCUMULATE_TYPE><<<grid_size_1d, block_size_1d, shared_mem_size>>>(
             d_C_kernel, d_C_reference_fp64, d_abs_AB_product, d_error_results, n);
 
         cudaDeviceSynchronize();
@@ -864,10 +917,24 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     printf("Average Error_beta/u: %.6e\n", beta_stats.average/u_compute);
     printf("Log c_hat median: %.6e\n", log_c_hat_median);
 
-    // Save summary results with metadata to file
-    char filename[256];
-    snprintf(filename, sizeof(filename), "data/%s_%s_n%d.csv",
-             output_prefix, matrixTypeToString(matrix_type), n);
+    char folder[64];
+    char filename[512];
+
+    // Determine folder based on mixprec mode (now simpler!)
+    if (areBothTypesFP32()) {
+        snprintf(folder, sizeof(folder), "data/UC_UA_FP32/");
+    } else {
+        snprintf(folder, sizeof(folder), "data/UC_%s_UA_%s/",
+                 getComputeTypeString(), getAccumulateTypeString());
+    }
+
+    mkdir(folder, static_cast<mode_t>(0777));
+
+    // Construct filename (same for both modes)
+    snprintf(filename, sizeof(filename), "%s%s_%s_%s_n%d.csv",
+         folder, output_prefix, kernelTypeToString(kernel_type),
+         matrixTypeToString(matrix_type), n);
+
     fp = fopen(filename, "w");
     if (fp) {
         // Write header with all metadata and statistics
@@ -901,11 +968,8 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     // Cleanup device memory
     cudaFree(d_A); cudaFree(d_B); cudaFree(d_C_kernel);
-    cudaFree(d_C_reference_fp64); cudaFree(d_A_abs); cudaFree(d_B_abs);
+    cudaFree(d_C_reference_fp64);
     cudaFree(d_abs_AB_product); cudaFree(d_error_results);
-
-    // Cleanup cuBLAS handle
-    cublasDestroy(cublas_handle);
 
     // Cleanup host memory (much less now!)
     free(frobenius_errors); free(frobenius_M_error); free(normalized_errors);
@@ -981,7 +1045,15 @@ void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_t
     compute_reference_fp64_device<<<numBlocks, threadsPerBlock>>>(d_A, d_B, d_C_reference_fp64, n);
 
     // Launch the specified kernel using SAME dispatch as run_multi_sample_analysis
-    launch_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+    if (is_mixprec_kernel(kernel_type)) {
+        launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+            kernel_type, (COMPUTE_TYPE*)d_A, (COMPUTE_TYPE*)d_B, (ACCUMULATE_TYPE*)d_C_kernel, n, numBlocks, threadsPerBlock);
+    } else if (areBothTypesFP32()) {
+        launch_basic_kernel_by_type(kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
+    } else {
+        printf("ERROR: Non-mixprec kernels require FP32 types\n");
+        return;
+    }
 
     // Compute absolute value matrices (convert to FP64)
     compute_matrix_abs_fp64_kernel<<<grid_size_1d, block_size_1d>>>(d_A, d_A_abs, total_elements);
@@ -1071,3 +1143,18 @@ void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_t
 
     printf("Per-tile error analysis completed.\n");
 }
+
+
+template __global__ void compute_reference_and_norm_fp64_device<float>(const float* A, const float* B, double* C_ref, double* abs_AB_product, int n);
+template __global__ void compute_reference_and_norm_fp64_device<double>(const double* A, const double* B, double* C_ref, double* abs_AB_product, int n);
+
+#ifdef __CUDA_FP16_TYPES_EXIST__
+template __global__ void compute_reference_and_norm_fp64_device<__half>(const __half* A, const __half* B, double* C_ref, double* abs_AB_product, int n);
+#endif
+
+#ifdef __CUDA_BF16_TYPES_EXIST__
+template __global__ void compute_reference_and_norm_fp64_device<__nv_bfloat16>(const __nv_bfloat16* A, const __nv_bfloat16* B, double* C_ref, double* abs_AB_product, int n);
+#endif
+
+// Current build configuration
+template __global__ void compute_frobenius_error_kernel<ACCUMULATE_TYPE>(ACCUMULATE_TYPE*, double*, double*, double*, int);

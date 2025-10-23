@@ -122,7 +122,12 @@ void runBenchmark(int n, KernelType kernel_type,
                   float* d_A, float* d_B, float* d_C,
                   FILE* dataFile) {
 
-    const char* name = kernelTypeToString(kernel_type);  // Get name from enum
+    const char* name = kernelTypeToString(kernel_type);
+
+    // Add validation check
+    if (!validate_benchmark_precision_requirements(kernel_type)) {
+        return;
+    }
 
     size_t size = n * n * sizeof(float);
     double operations = 2.0 * n * n * n; // 2*N^3 FLOPs for matrix multiplication
@@ -141,8 +146,8 @@ void runBenchmark(int n, KernelType kernel_type,
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    // Warmup run using unified dispatch
-    launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+    // Warmup run - SIMPLIFIED
+    launch_basic_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
     cudaDeviceSynchronize();
 
     // Clear result matrix with a known pattern
@@ -154,12 +159,12 @@ void runBenchmark(int n, KernelType kernel_type,
     for (int i = 0; i < 100; i++) checksum_before += h_C[i];
     printf("Debug: Checksum before %s: %.6f\n", name, checksum_before);
 
-    // WARM-UP RUNS
+    // WARM-UP RUNS - SIMPLIFIED
     printf("  Warming up...");
     for (int i = 0; i < 3; i++) {
-        launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+        launch_basic_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
     }
-    cudaDeviceSynchronize();  // Ensure all warm-up runs complete
+    cudaDeviceSynchronize();
     printf(" done\n");
 
     // MULTIPLE TIMED RUNS
@@ -177,10 +182,10 @@ void runBenchmark(int n, KernelType kernel_type,
     for (int run = 0; run < num_runs; run++) {
         cudaEventRecord(start);
 
-        // Multiple kernel calls per timing measurement
-        int iterations_per_run = (n < 1024) ? 10 : 3;  // At least 3 iterations for N=1024
+        int iterations_per_run = (n < 1024) ? 10 : 3;
         for (int iter = 0; iter < iterations_per_run; iter++) {
-            launch_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
+            // SIMPLIFIED - only basic launcher
+            launch_basic_kernel_by_type(kernel_type, d_A, d_B, d_C, n, numBlocks, threadsPerBlock);
         }
 
         cudaEventRecord(stop);
@@ -313,17 +318,23 @@ void runKernelPerformance(KernelType kernel_type, int n) {
 
     printf("=== Kernel Performance Test ===\n");
     printf("Kernel: %s, Size: %dx%d\n", kernel_name, n, n);
+
+    // Add validation check at the start
+    if (!validate_benchmark_precision_requirements(kernel_type)) {
+        return;
+    }
+
     printf("Using COMPUTE_TYPE: %s (%zu bytes per element)\n",
            getComputeTypeString(), sizeof(COMPUTE_TYPE));
     printf("Using ACCUMULATE_TYPE: %s (%zu bytes per element)\n",
            getAccumulateTypeString(), sizeof(ACCUMULATE_TYPE));
 
-    // Allocate memory based on COMPUTE_TYPE
-    size_t size = n * n * sizeof(COMPUTE_TYPE);
-    COMPUTE_TYPE *h_A = (COMPUTE_TYPE*)malloc(size);
-    COMPUTE_TYPE *h_B = (COMPUTE_TYPE*)malloc(size);
-    COMPUTE_TYPE *h_C = (COMPUTE_TYPE*)malloc(size);
-    COMPUTE_TYPE *d_A, *d_B, *d_C;
+    // SIMPLIFIED - always use float for benchmarking
+    size_t size = n * n * sizeof(float);
+    float *h_A = (float*)malloc(size);
+    float *h_B = (float*)malloc(size);
+    float *h_C = (float*)malloc(size);
+    float *d_A, *d_B, *d_C;
 
     if (!h_A || !h_B || !h_C) {
         printf("ERROR: Failed to allocate host memory\n");
@@ -334,20 +345,8 @@ void runKernelPerformance(KernelType kernel_type, int n) {
     cudaMalloc(&d_B, size);
     cudaMalloc(&d_C, size);
 
-    // Initialize matrices - need to handle different types
-    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
-        // For float, use existing function
-        initialize_benchmark_matrices((float*)h_A, (float*)h_B, (float*)h_C, n);
-    } else {
-        // For other types (half, bfloat16), need type-appropriate initialization
-        fill_matrix_typed(h_A, n);  // Need to create this
-        fill_matrix_typed(h_B, n);
-        memset(h_C, 0, size);
-
-        printf("Debug: Matrix initialization complete\n");
-        printf("  A[0] = %f, B[0] = %f, C[0] = %f\n",
-               (float)h_A[0], (float)h_B[0], (float)h_C[0]);
-    }
+    // SIMPLIFIED - always use float initialization
+    initialize_benchmark_matrices(h_A, h_B, h_C, n);
 
     // Copy to device
     cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
@@ -371,13 +370,7 @@ void runKernelPerformance(KernelType kernel_type, int n) {
 
     // Run the benchmark - need to cast back to float* for runBenchmark compatibility
     // OR make runBenchmark templated to handle COMPUTE_TYPE
-    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
-        runBenchmark(n, kernel_type, (float*)h_A, (float*)h_B, (float*)h_C,
-                     (float*)d_A, (float*)d_B, (float*)d_C, dataFile);
-    } else {
-        printf("Warning: runBenchmark currently only supports float matrices\n");
-        printf("Need to implement templated runBenchmark for COMPUTE_TYPE\n");
-    }
+    runBenchmark(n, kernel_type, h_A, h_B, h_C, d_A, d_B, d_C, dataFile);
 
     // Check occupancy for the selected kernel
     assess_kernel_resources(kernel_type, n);
@@ -459,4 +452,27 @@ void assess_kernel_resources(KernelType kernel_type, int n) {
     }
 
     printf("===================================\n\n");
+}
+
+// Add this function to the top of benchmark.cu (after the includes):
+
+bool validate_benchmark_precision_requirements(KernelType kernel_type) {
+    // For mixed precision kernels, we need FP32 types for benchmark compatibility
+    if (is_mixprec_kernel(kernel_type) && !areBothTypesFP32()) {
+        printf("ERROR: Benchmark currently only supports FP32 types.\n");
+        printf("Mixed precision kernel %s requires COMPUTE_TYPE=float and ACCUMULATE_TYPE=float for benchmarking.\n",
+               kernelTypeToString(kernel_type));
+        printf("Please recompile with: make COMPUTE_TYPE=float ACCUMULATE_TYPE=float\n");
+        return false;
+    }
+
+    // For non-mixprec kernels, they should always work with FP32
+    if (!is_mixprec_kernel(kernel_type) && !areBothTypesFP32()) {
+        printf("ERROR: Non-mixprec kernel %s requires COMPUTE_TYPE=float and ACCUMULATE_TYPE=float.\n",
+               kernelTypeToString(kernel_type));
+        printf("Please recompile with: make COMPUTE_TYPE=float ACCUMULATE_TYPE=float\n");
+        return false;
+    }
+
+    return true;
 }

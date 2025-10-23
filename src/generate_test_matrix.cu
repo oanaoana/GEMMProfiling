@@ -14,6 +14,8 @@
 #include <vector>
 #include <cmath>
 #include <time.h>
+#include <cuda_fp16.h>        // for __half
+#include <cuda_bf16.h>        // for __nv_bfloat16
 
 // Helper function to check if file exists
 bool file_exists(const char* filename) {
@@ -770,3 +772,63 @@ void generate_matrix_distribution(float* d_matrix, int m, int n, DistributionTyp
 
     curandDestroyGenerator(gen);
 }
+
+template<typename T>
+void generate_matrix_device_with_seed_typed(T* d_matrix, int n, MatrixType type,
+                                           unsigned long long seed,
+                                           dim3 numBlocks, dim3 threadsPerBlock) {
+
+    bool needs_conversion = !std::is_same<T, float>::value;
+
+    if (needs_conversion) {
+        // Generate in float first, then convert in-place on device
+        float* d_temp_float;
+        cudaMalloc(&d_temp_float, n * n * sizeof(float));
+
+        // Generate using existing float implementation
+        generate_matrix_device_with_seed(d_temp_float, n, type, seed);
+
+        // Convert using the SAME kernel dispatch configuration as your GEMM kernels
+        convert_matrix_kernel<float, T><<<numBlocks, threadsPerBlock>>>(
+            d_temp_float, d_matrix, n
+        );
+        cudaDeviceSynchronize();
+
+        cudaFree(d_temp_float);
+    } else {
+        // T is float, use existing implementation directly
+        generate_matrix_device_with_seed((float*)d_matrix, n, type, seed);
+    }
+}
+
+// CUDA kernel for type conversion with kernel-aware dispatch
+template<typename SrcType, typename DstType>
+__global__ void convert_matrix_kernel(const SrcType* src, DstType* dst, int n) {
+    // Use 2D thread indexing consistent with GEMM kernels
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < n && col < n) {
+        int idx = row * n + col;  // Row-major indexing
+        dst[idx] = static_cast<DstType>(src[idx]);
+    }
+}
+
+// Fix: Correct template instantiation guards - use build-time checks instead of runtime
+template void generate_matrix_device_with_seed_typed<float>(float* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
+template void generate_matrix_device_with_seed_typed<double>(double* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
+// Add explicit instantiations for the conversion kernel
+template __global__ void convert_matrix_kernel<float, double>(const float* src, double* dst, int n);
+template __global__ void convert_matrix_kernel<float, float>(const float* src, float* dst, int n);
+
+// Fix: Remove __CUDA_ARCH__ check - this is for device code, not template instantiation
+#if defined(__CUDA_FP16_TYPES_EXIST__)
+template void generate_matrix_device_with_seed_typed<__half>(__half* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
+template __global__ void convert_matrix_kernel<float, __half>(const float* src, __half* dst, int n);
+#endif
+// #if defined(__CUDA_BF16_TYPES_EXIST__)
+// template void generate_matrix_device_with_seed_typed<__nv_bfloat16>(__nv_bfloat16* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
+// template __global__ void convert_matrix_kernel<float, __nv_bfloat16>(const float* src, __nv_bfloat16* dst, int n);
+// #endif
+
+

@@ -5,6 +5,8 @@
 #include <math.h>
 #include "../include/gemms.cuh"
 #include "../include/benchmark.h"  // For BLOCK_SIZE, TILE_SIZE constants
+#include <type_traits>
+#include <typeinfo>               // Add this line!
 
 void fill_matrix(float *mat, int N) {
     for (int i = 0; i < N * N; ++i) {
@@ -349,36 +351,76 @@ const char* matrixTypeToString(MatrixType matrix_type) {
     }
 }
 
-// Optimized kernel dispatch using function pointer table
-typedef void (*KernelFunc)(float*, float*, float*, int, dim3, dim3);
+template<typename ComputeType, typename AccumulateType>
+void launch_mixprec_kernel_by_type(KernelType kernel_type, ComputeType* d_A, ComputeType* d_B, AccumulateType* d_C, int n, dim3 blocks, dim3 threads) {
+    switch(kernel_type) {
+        case KERNEL_TILED_MIXPREC:
+            // Call templated launch function with proper types
+            launch_tiled_mixprec<ComputeType, AccumulateType>(d_A, d_B, d_C, n, blocks, threads);
+            break;
 
-static KernelFunc kernel_function_table[] = {
-    launch_naive,                           // KERNEL_NAIVE
-    launch_tiled,                          // KERNEL_TILED
-    launch_tiled_opt,                      // KERNEL_TILED_OPT
-    launch_tiled_pairwise,                 // KERNEL_TILED_PAIRWISE
-    launch_tiled_rect,                     // KERNEL_TILED_RECT
-    launch_tiled_mixprec,           // KERNEL_TILED_MIXPREC
-    launch_tiled_pairwise_mixprec,  // KERNEL_TILED_PAIRWISE_MIXPREC - Add this
-    launch_cublas,                         // KERNEL_CUBLAS
-    launch_cublas_tensor,                  // KERNEL_CUBLAS_TENSOR
-    launch_cutlass,                        // KERNEL_CUTLASS
-    launch_cutlass_tensor,                 // KERNEL_CUTLASS_TENSOR
-    launch_cutlass_splitk_flat,            // KERNEL_CUTLASS_SPLITK_FLAT
-    launch_cutlass_splitk_pairwise         // KERNEL_CUTLASS_SPLITK_PAIRWISE
-};
+        case KERNEL_TILED_PAIRWISE_MIXPREC:
+            launch_tiled_pairwise_mixprec<ComputeType, AccumulateType>(d_A, d_B, d_C, n, blocks, threads);
+            break;
 
-
-
-void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
-    // Bounds check for safety
-    if (kernel_type < 0 || kernel_type >= sizeof(kernel_function_table)/sizeof(kernel_function_table[0])) {
-        printf("ERROR: Invalid kernel type %d\n", (int)kernel_type);
-        return;
+        default:
+            printf("ERROR: Kernel type %s not supported for mixed precision\n", kernelTypeToString(kernel_type));
+            break;
     }
+}
 
-    // Direct function pointer call - zero overhead dispatch!
-    kernel_function_table[kernel_type](d_A, d_B, d_C, n, blocks, threads);
+// Enhanced basic kernel launcher that handles both FP32-only and mixprec kernels
+void launch_basic_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads) {
+    switch(kernel_type) {
+        // FP32-only kernels
+        case KERNEL_NAIVE:
+            launch_naive(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_TILED:
+            launch_tiled(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_TILED_OPT:
+            launch_tiled_opt(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_TILED_PAIRWISE:
+            launch_tiled_pairwise(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_TILED_RECT:
+            launch_tiled_rect(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_CUBLAS:
+            launch_cublas(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_CUBLAS_TENSOR:
+            launch_cublas_tensor(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_CUTLASS:
+            launch_cutlass(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_CUTLASS_TENSOR:
+            launch_cutlass_tensor(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_CUTLASS_SPLITK_FLAT:
+            launch_cutlass_splitk_flat(d_A, d_B, d_C, n, blocks, threads);
+            break;
+        case KERNEL_CUTLASS_SPLITK_PAIRWISE:
+            launch_cutlass_splitk_pairwise(d_A, d_B, d_C, n, blocks, threads);
+            break;
+
+        // Mixed precision kernels - call templated versions with current types
+        case KERNEL_TILED_MIXPREC:
+            launch_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+                (COMPUTE_TYPE*)d_A, (COMPUTE_TYPE*)d_B, (ACCUMULATE_TYPE*)d_C, n, blocks, threads);
+            break;
+        case KERNEL_TILED_PAIRWISE_MIXPREC:
+            launch_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+                (COMPUTE_TYPE*)d_A, (COMPUTE_TYPE*)d_B, (ACCUMULATE_TYPE*)d_C, n, blocks, threads);
+            break;
+
+        default:
+            printf("ERROR: Kernel type %s not supported\n", kernelTypeToString(kernel_type));
+            break;
+    }
 }
 
 // Kernel function pointer lookup utility
@@ -395,14 +437,10 @@ void* get_kernel_function_pointer(KernelType kernel_type) {
         case KERNEL_TILED_RECT:
             return (void*)matmul_tiled_rectangular;
 
-        // Template kernels - get pointer to specific instantiation
+        // Template kernels - return nullptr since function pointers are complex for templates
         case KERNEL_TILED_MIXPREC:
-            // This gets the function pointer for the specific template instantiation
-            // that matches your compile-time COMPUTE_TYPE and ACCUMULATE_TYPE
-            return (void*)matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>;
-
         case KERNEL_TILED_PAIRWISE_MIXPREC:
-            return (void*)matmul_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>;
+            return nullptr;  // Can't easily get function pointer for template
 
         // Library kernels - no function pointers available
         case KERNEL_CUBLAS:
@@ -568,51 +606,136 @@ void fill_matrix_typed(T* mat, int N) {
     }
 }
 
+TypeInfo getComputeTypeInfo() {
+    TypeInfo info;
+    #ifdef COMPUTE_TYPE
+        info.size_bytes = sizeof(COMPUTE_TYPE);
+
+        if (std::is_same<COMPUTE_TYPE, float>::value) {
+            info.name = "FP32";
+            info.cuda_type = "float";
+            info.supports_mixed = true;
+        } else if (std::is_same<COMPUTE_TYPE, __half>::value) {
+            info.name = "FP16";
+            info.cuda_type = "__half";
+            info.supports_mixed = true;
+        } else if (std::is_same<COMPUTE_TYPE, double>::value) {
+            info.name = "FP64";
+            info.cuda_type = "double";
+            info.supports_mixed = false;  // Typically not used in mixed precision
+        } else {
+            info.name = "UNKNOWN";
+            info.cuda_type = "unknown";
+            info.supports_mixed = false;
+        }
+    #else
+        // Default to FP32
+        info.name = "FP32";
+        info.cuda_type = "float";
+        info.size_bytes = 4;
+        info.supports_mixed = true;
+    #endif
+    return info;
+}
+
+TypeInfo getAccumulateTypeInfo() {
+    TypeInfo info;
+    #ifdef ACCUMULATE_TYPE
+        info.size_bytes = sizeof(ACCUMULATE_TYPE);
+
+        if (std::is_same<ACCUMULATE_TYPE, float>::value) {
+            info.name = "FP32";
+            info.cuda_type = "float";
+            info.supports_mixed = true;
+        } else if (std::is_same<ACCUMULATE_TYPE, __half>::value) {
+            info.name = "FP16";
+            info.cuda_type = "__half";
+            info.supports_mixed = true;
+        } else if (std::is_same<ACCUMULATE_TYPE, double>::value) {
+            info.name = "FP64";
+            info.cuda_type = "double";
+            info.supports_mixed = false;
+        } else {
+            info.name = "UNKNOWN";
+            info.cuda_type = "unknown";
+            info.supports_mixed = false;
+        }
+    #else
+        // Default to FP32
+        info.name = "FP32";
+        info.cuda_type = "float";
+        info.size_bytes = 4;
+        info.supports_mixed = true;
+    #endif
+    return info;
+}
+
+// Keep existing functions, now they use TypeInfo internally
+const char* getComputeTypeString() {
+    return getComputeTypeInfo().name;
+}
+
+const char* getAccumulateTypeString() {
+    return getAccumulateTypeInfo().name;
+}
+
+const char* getTypeNameFromSize(size_t bytes) {
+    switch(bytes) {
+        case 2: return "FP16";
+        case 4: return "FP32";
+        case 8: return "FP64";
+        default: return "UNKNOWN";
+    }
+}
+
+// Check if a kernel is mixprec-capable
+bool is_mixprec_kernel(KernelType kernel_type) {
+    return (kernel_type == KERNEL_TILED_MIXPREC ||
+            kernel_type == KERNEL_TILED_PAIRWISE_MIXPREC);
+}
+
+// Validate precision settings
+void validate_precision_settings(KernelType kernel_type) {
+    bool is_all_fp32 = areBothTypesFP32();
+
+    if (!is_mixprec_kernel(kernel_type) && !is_all_fp32) {
+        fprintf(stderr, "\n=== ERROR: Invalid Precision Configuration ===\n");
+        fprintf(stderr, "Kernel: %s\n", kernelTypeToString(kernel_type));
+        fprintf(stderr, "Compute Type: %s, Accumulate Type: %s\n",
+                getComputeTypeString(), getAccumulateTypeString());
+        fprintf(stderr, "\nNon-mixprec kernels (tiled, tiled_pairwise, cublas, cutlass) ");
+        fprintf(stderr, "can only be run with COMPUTE_TYPE=float and ACCUMULATE_TYPE=float.\n");
+        fprintf(stderr, "For mixed precision, use kernels: tiled_mixprec, tiled_pairwise_mixprec\n");
+        fprintf(stderr, "\nPlease recompile with: make COMPUTE_TYPE=float ACCUMULATE_TYPE=float\n");
+        fprintf(stderr, "===========================================\n\n");
+        exit(1);
+    }
+}
+
+bool areBothTypesFP32() {
+    return (strcmp(getComputeTypeString(), "FP32") == 0 &&
+            strcmp(getAccumulateTypeString(), "FP32") == 0);
+}
+
+
 // Explicit instantiations
 template void fill_matrix_typed<float>(float* mat, int N);
+#ifdef __CUDA_FP16_TYPES_EXIST__
 template void fill_matrix_typed<__half>(__half* mat, int N);
-#ifdef __CUDA_BF16_TYPES_EXIST__
-template void fill_matrix_typed<__nv_bfloat16>(__nv_bfloat16* mat, int N);
 #endif
+// #ifdef __CUDA_BF16_TYPES_EXIST__
+// template void fill_matrix_typed<__nv_bfloat16>(__nv_bfloat16* mat, int N);
+// #endif
 
-const char* getComputeTypeString() {
-    if constexpr (std::is_same_v<COMPUTE_TYPE, float>) {
-        return "FP32";
-    } else if constexpr (std::is_same_v<COMPUTE_TYPE, __half>) {
-        return "FP16";
-    } else if constexpr (std::is_same_v<COMPUTE_TYPE, double>) {
-        return "FP64";
-    }
-#ifdef __CUDA_BF16_TYPES_EXIST__
-    else if constexpr (std::is_same_v<COMPUTE_TYPE, __nv_bfloat16>) {
-        return "BF16";
-    }
-#endif
-    else if constexpr (sizeof(COMPUTE_TYPE) == 1) {
-        return "INT8";  // For int8_t types
-    } else if constexpr (sizeof(COMPUTE_TYPE) == 2 && std::is_integral_v<COMPUTE_TYPE>) {
-        return "INT16"; // For int16_t types
-    } else {
-        return "UNKNOWN";
-    }
-}
+template void launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+    KernelType, COMPUTE_TYPE*, COMPUTE_TYPE*, ACCUMULATE_TYPE*, int, dim3, dim3);
+// template void launch_mixprec_kernel_by_type<float, float>(KernelType, float*, float*, float*, int, dim3, dim3);
+// template void launch_mixprec_kernel_by_type<float, double>(KernelType, float*, float*, double*, int, dim3, dim3);
 
-// Add this function to utils.cu:
-const char* getAccumulateTypeString() {
-    if constexpr (std::is_same_v<ACCUMULATE_TYPE, float>) {
-        return "FP32";
-    } else if constexpr (std::is_same_v<ACCUMULATE_TYPE, double>) {
-        return "FP64";
-    } else if constexpr (std::is_same_v<ACCUMULATE_TYPE, __half>) {
-        return "FP16";
-    }
-#ifdef __CUDA_BF16_TYPES_EXIST__
-    else if constexpr (std::is_same_v<ACCUMULATE_TYPE, __nv_bfloat16>) {
-        return "BF16";
-    }
-#endif
-    else {
-        return "UNKNOWN";
-    }
-}
+// #ifdef __CUDA_FP16_TYPES_EXIST__
+// template void launch_mixprec_kernel_by_type<__half, float>(KernelType, __half*, __half*, float*, int, dim3, dim3);
+// #endif
 
+// #ifdef __CUDA_BF16_TYPES_EXIST__
+// template void launch_kernel_by_type<__nv_bfloat16, float>(KernelType, __nv_bfloat16*, __nv_bfloat16*, float*, int, dim3, dim3);
+// #endif

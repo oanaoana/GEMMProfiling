@@ -22,7 +22,7 @@ from io import StringIO
 
 
 # Configure data folder here
-DATA_FOLDER = "data"  # Change this to "data" for current data
+DATA_FOLDER = "data/UC_UA_FP32"  # Change this to "data" for current data
 OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)

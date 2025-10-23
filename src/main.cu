@@ -117,11 +117,23 @@ int main(int argc, char **argv) {
     printf("\nGEMM Performance Profiling\n");
     printf("==========================\n");
 
+    // Print precision configuration
+    printf("Precision: Compute=%s, Accumulate=%s\n",
+           getComputeTypeString(), getAccumulateTypeString());
+
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
     printf("GPU: %s\n", prop.name);
     printf("Compute Capability: %d.%d\n", prop.major, prop.minor);
     printf("Memory: %.1f GB\n", prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+
+    // Validate precision settings if a test kernel was specified
+    if (strlen(test_name) > 0) {
+        KernelType kernel_type = getKernelTypeFromName(test_name);
+        if (kernel_type != (KernelType)-1) {
+            validate_precision_settings(kernel_type);
+        }
+    }
 
     cudaProfilerStart();
 

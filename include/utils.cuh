@@ -26,7 +26,10 @@ typedef struct {
 void compute_array_statistics(const double* array, int size, ArrayStats* stats);
 
 // Unified kernel dispatch function
-void launch_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+template<typename ComputeType, typename AccumulateType>
+void launch_mixprec_kernel_by_type(KernelType kernel_type, ComputeType* d_A, ComputeType* d_B, AccumulateType* d_C, int n, dim3 blocks, dim3 threads);
+
+void launch_basic_kernel_by_type(KernelType kernel_type, float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
 
 // Kernel name to type mapping
 KernelType getKernelTypeFromName(const char* name);
@@ -49,8 +52,26 @@ void compute_kernel_dimensions_dispatch_1D(int n, int* threadsPerBlock, int* num
 
 void compute_dimensions(const char* kernel_name, int n, dim3* threadsPerBlock, dim3* numBlocks);
 
-// Add this function declaration:
+// Type information structure
+struct TypeInfo {
+    const char* name;        // "FP32", "FP16", "FP64"
+    const char* cuda_type;   // "float", "__half", "double"
+    size_t size_bytes;       // 4, 2, 8
+    bool supports_mixed;     // Can this be used in mixed precision?
+};
+
+// Get type info for current compilation
+TypeInfo getComputeTypeInfo();
+TypeInfo getAccumulateTypeInfo();
+
+// Keep existing functions for backward compatibility
 const char* getComputeTypeString();
 const char* getAccumulateTypeString();
+
+// New helper functions
+const char* getTypeNameFromSize(size_t bytes);
+bool areBothTypesFP32();  // Helper for folder naming logic
+bool is_mixprec_kernel(KernelType kernel_type);
+void validate_precision_settings(KernelType kernel_type);
 
 #endif // UTILS_CUH
