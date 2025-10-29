@@ -14,6 +14,8 @@
 #include <vector>     // for std::vector
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <typeinfo>
+#include <type_traits>  // for std::is_same_v
 
 // Device function for atomic add with double precision
 __device__ double atomicAddDouble(double* address, double val) {
@@ -755,7 +757,176 @@ __global__ void compute_EAB_entrywise(
     }
 }
 
+template<typename T>
+void validate_matrix_on_device(const T* d_matrix, int n, const char* label, bool verbose = false) {
+    // DEBUG: Check pointer and type info
+    printf("\n[DEBUG validate_matrix_on_device]\n");
+    printf("  Pointer: %p\n", d_matrix);
+    printf("  Type T: %s (size=%zu)\n", typeid(T).name(), sizeof(T));
+    printf("  Copying %d elements = %zu bytes\n", n*n, n*n*sizeof(T));
 
+    // Copy JUST the first element to verify pointer is valid
+    T first_val;
+    cudaError_t err = cudaMemcpy(&first_val, d_matrix, sizeof(T), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        printf("  ERROR: Failed to copy first element: %s\n", cudaGetErrorString(err));
+        return;
+    }
+    printf("  First element before full copy: %f\n", static_cast<float>(first_val));
+
+    // Copy to host
+    std::vector<T> h_matrix(n * n);
+    err = cudaMemcpy(h_matrix.data(), d_matrix, n * n * sizeof(T), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        printf("  ERROR: cudaMemcpy failed: %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    printf("  First element after full copy: %f\n", static_cast<float>(h_matrix[0]));
+
+    // Statistics
+    int nan_count = 0;
+    int inf_count = 0;
+    int zero_count = 0;
+    int negative_count = 0;
+    double sum = 0.0;
+    double min_val = 1e30;
+    double max_val = -1e30;
+
+    // Collect sample values for inspection
+    std::vector<float> samples;
+    int sample_stride = std::max(1, (n * n) / 100);  // Sample ~100 values
+
+    for (int i = 0; i < n * n; i++) {
+        float val = static_cast<float>(h_matrix[i]);
+
+        if (std::isnan(val)) {
+            nan_count++;
+            if (verbose && nan_count <= 5) {
+                printf("  NaN at index %d (row=%d, col=%d)\n", i, i/n, i%n);
+            }
+        } else if (std::isinf(val)) {
+            inf_count++;
+            if (verbose && inf_count <= 5) {
+                printf("  Inf at index %d (row=%d, col=%d): %f\n", i, i/n, i%n, val);
+            }
+        } else {
+            // Valid value
+            sum += val;
+            if (val == 0.0f) zero_count++;
+            if (val < 0.0f) negative_count++;
+            min_val = std::min(min_val, (double)val);
+            max_val = std::max(max_val, (double)val);
+
+            if (i % sample_stride == 0) {
+                samples.push_back(val);
+            }
+        }
+    }
+
+    // Print summary
+    printf("\n=== Matrix Validation: %s ===\n", label);
+    printf("  Size: %d x %d (%d elements)\n", n, n, n*n);
+    printf("  Type: %s\n", typeid(T).name());
+    printf("  Type size: %zu bytes\n", sizeof(T));
+
+    if (nan_count > 0 || inf_count > 0) {
+        printf("  ❌ INVALID VALUES DETECTED!\n");
+        printf("  NaN count: %d (%.2f%%)\n", nan_count, 100.0 * nan_count / (n*n));
+        printf("  Inf count: %d (%.2f%%)\n", inf_count, 100.0 * inf_count / (n*n));
+    } else {
+        printf("  ✓ No NaN or Inf values\n");
+    }
+
+    int valid_count = n*n - nan_count - inf_count;
+    if (valid_count > 0) {
+        printf("  Valid values: %d (%.2f%%)\n", valid_count, 100.0 * valid_count / (n*n));
+        printf("  Zero count: %d (%.2f%%)\n", zero_count, 100.0 * zero_count / (n*n));
+        printf("  Negative count: %d (%.2f%%)\n", negative_count, 100.0 * negative_count / (n*n));
+        printf("  Min value: %.6e\n", min_val);
+        printf("  Max value: %.6e\n", max_val);
+        printf("  Mean value: %.6e\n", sum / valid_count);
+
+        if (verbose && samples.size() > 0) {
+            printf("  Sample values (first 10):\n");
+            for (int i = 0; i < std::min(10, (int)samples.size()); i++) {
+                printf("    [%d]: %.6e\n", i, samples[i]);
+            }
+        }
+    }
+    printf("=========================\n\n");
+}
+
+// Specialized validation for comparing two matrices
+template<typename T1, typename T2>
+void validate_matrix_difference(const T1* d_matrix1, const T2* d_matrix2, int n,
+                                const char* label1, const char* label2, bool verbose = false) {
+    // Copy both matrices to host
+    std::vector<T1> h_matrix1(n * n);
+    std::vector<T2> h_matrix2(n * n);
+    cudaMemcpy(h_matrix1.data(), d_matrix1, n * n * sizeof(T1), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_matrix2.data(), d_matrix2, n * n * sizeof(T2), cudaMemcpyDeviceToHost);
+
+    printf("\n=== Comparing %s vs %s ===\n", label1, label2);
+    printf("  Size: %d x %d\n", n, n);
+    printf("  Type 1: %s (%zu bytes)\n", typeid(T1).name(), sizeof(T1));
+    printf("  Type 2: %s (%zu bytes)\n", typeid(T2).name(), sizeof(T2));
+
+    int mismatch_count = 0;
+    int both_invalid = 0;
+    double max_abs_diff = 0.0;
+    double sum_abs_diff = 0.0;
+    double sum_rel_diff = 0.0;
+    int valid_comparisons = 0;
+
+    for (int i = 0; i < n * n; i++) {
+        float val1 = static_cast<float>(h_matrix1[i]);
+        float val2 = static_cast<float>(h_matrix2[i]);
+
+        bool invalid1 = std::isnan(val1) || std::isinf(val1);
+        bool invalid2 = std::isnan(val2) || std::isinf(val2);
+
+        if (invalid1 && invalid2) {
+            both_invalid++;
+            continue;
+        }
+
+        if (invalid1 || invalid2) {
+            mismatch_count++;
+            if (verbose && mismatch_count <= 10) {
+                printf("  Mismatch at [%d,%d]: %s=%.6e, %s=%.6e\n",
+                       i/n, i%n, label1, val1, label2, val2);
+            }
+            continue;
+        }
+
+        // Both valid - compute difference
+        double abs_diff = std::abs(val1 - val2);
+        double rel_diff = (val2 != 0.0f) ? abs_diff / std::abs(val2) : abs_diff;
+
+        sum_abs_diff += abs_diff;
+        sum_rel_diff += rel_diff;
+        max_abs_diff = std::max(max_abs_diff, abs_diff);
+        valid_comparisons++;
+
+        if (verbose && abs_diff > 1e-3 && mismatch_count < 10) {
+            printf("  Large diff at [%d,%d]: %s=%.6e, %s=%.6e, diff=%.6e (rel=%.6e)\n",
+                   i/n, i%n, label1, val1, label2, val2, abs_diff, rel_diff);
+            mismatch_count++;
+        }
+    }
+
+    printf("  Both invalid: %d\n", both_invalid);
+    printf("  One invalid: %d\n", mismatch_count);
+    printf("  Valid comparisons: %d\n", valid_comparisons);
+
+    if (valid_comparisons > 0) {
+        printf("  Max absolute difference: %.6e\n", max_abs_diff);
+        printf("  Mean absolute difference: %.6e\n", sum_abs_diff / valid_comparisons);
+        printf("  Mean relative difference: %.6e\n", sum_rel_diff / valid_comparisons);
+    }
+    printf("================================\n\n");
+}
 
 // Efficient multi-sample testing for specific matrix type and kernel
 // Uses consistent kernel configurations for fair error analysis:
@@ -768,19 +939,20 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 
     printf("=== Type Configuration ===\n");
     printf("Compute Type: %s (%zu bytes)\n", compute_info.name, compute_info.size_bytes);
-    printf("Accumulate Type: %s (%zu bytes)\n", accumulate_info.name, compute_info.size_bytes);
+    printf("Accumulate Type: %s (%zu bytes)\n", accumulate_info.name, accumulate_info.size_bytes);
     printf("Reference Type: FP64 (8 bytes)\n");
     printf("Matrix Type: %s\n", matrixTypeToString(matrix_type));
     printf("==========================\n\n");
 
     // Allocate matrices using COMPUTE_TYPE
     size_t size_compute = n * n * sizeof(COMPUTE_TYPE);
+    size_t size_accumulate = n * n * sizeof(ACCUMULATE_TYPE);
     COMPUTE_TYPE *d_A, *d_B;
     ACCUMULATE_TYPE*d_C_kernel;
 
     cudaMalloc(&d_A, size_compute);
     cudaMalloc(&d_B, size_compute);
-    cudaMalloc(&d_C_kernel, size_compute);
+    cudaMalloc(&d_C_kernel, size_accumulate);
 
     // Allocate reference matrices in FP64
     size_t size_fp64 = n * n * sizeof(double);
@@ -846,10 +1018,70 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         generate_matrix_device_with_seed_typed<COMPUTE_TYPE>(d_A, n, matrix_type, seedA, numBlocks, threadsPerBlock);
         generate_matrix_device_with_seed_typed<COMPUTE_TYPE>(d_B, n, matrix_type, seedB, numBlocks, threadsPerBlock);
 
-        // Compute FP64 reference directly on device using same configuration as test kernel
-        // This ensures consistency with the cuBLAS kernel configuration from gemms.cu
-        compute_reference_and_norm_fp64_device<COMPUTE_TYPE><<<numBlocks, threadsPerBlock>>>(
-            d_A, d_B, d_C_reference_fp64, d_abs_AB_product, n);
+        // // After both A and B are generated:
+        // std::vector<COMPUTE_TYPE> h_A_sample(10);
+        // std::vector<COMPUTE_TYPE> h_B_sample(10);
+        // cudaMemcpy(h_A_sample.data(), d_A, 10 * sizeof(COMPUTE_TYPE), cudaMemcpyDeviceToHost);
+        // cudaMemcpy(h_B_sample.data(), d_B, 10 * sizeof(COMPUTE_TYPE), cudaMemcpyDeviceToHost);
+
+        // printf("\n=== INPUT MATRICES (first 10 elements) ===\n");
+        // printf("COMPUTE_TYPE size: %zu bytes\n", sizeof(COMPUTE_TYPE));
+        // printf("A: ");
+        // for (int i = 0; i < 10; i++) {
+        //     printf("%.6f ", static_cast<float>(h_A_sample[i]));
+        // }
+        // printf("\nB: ");
+        // for (int i = 0; i < 10; i++) {
+        //     printf("%.6f ", static_cast<float>(h_B_sample[i]));
+        // }
+        // printf("\n==========================================\n\n");
+
+        // // Now check the BYTES to see if they're truly different types
+        // printf("=== RAW MEMORY (first 10 elements as hex) ===\n");
+        // unsigned char* bytes_A = reinterpret_cast<unsigned char*>(h_A_sample.data());
+        // unsigned char* bytes_B = reinterpret_cast<unsigned char*>(h_B_sample.data());
+        // printf("A bytes: ");
+        // for (int i = 0; i < 10 * sizeof(COMPUTE_TYPE); i++) {
+        //     printf("%02x ", bytes_A[i]);
+        // }
+        // printf("\n=============================================\n\n");
+        // // // ✅ VALIDATE INPUT MATRICES
+        // // validate_matrix_on_device(d_A, n, "Input Matrix A (after generation)", sample == 0);  // verbose on first sample
+        // // validate_matrix_on_device(d_B, n, "Input Matrix B (after generation)", sample == 0);
+
+        //         // After generate_matrix_device_with_seed_typed:
+        // COMPUTE_TYPE test_val;
+        // cudaMemcpy(&test_val, d_A, sizeof(COMPUTE_TYPE), cudaMemcpyDeviceToHost);
+        // printf("First A element as COMPUTE_TYPE: raw=%f\n", static_cast<float>(test_val));
+
+        // float test_val_float;
+        // cudaMemcpy(&test_val_float, d_A, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("First A element as float: raw=%f\n", test_val_float);
+
+        // if (sizeof(COMPUTE_TYPE) == 2) {
+        //     // Check if it's actually half precision
+        //     unsigned short bits;
+        //     cudaMemcpy(&bits, d_A, sizeof(unsigned short), cudaMemcpyDeviceToHost);
+        //     printf("First A element raw bits (hex): 0x%04x\n", bits);
+        // }
+
+        // // Right before launch_mixprec_kernel_by_type:
+        // printf("\n=== BEFORE KERNEL LAUNCH ===\n");
+        // printf("Pointers being passed:\n");
+        // printf("  d_A: %p (COMPUTE_TYPE*, size=%zu)\n", d_A, sizeof(COMPUTE_TYPE));
+        // printf("  d_B: %p (COMPUTE_TYPE*, size=%zu)\n", d_B, sizeof(COMPUTE_TYPE));
+        // printf("  d_C_kernel: %p (ACCUMULATE_TYPE*, size=%zu)\n", d_C_kernel, sizeof(ACCUMULATE_TYPE));
+
+        // // Verify the pointers contain the expected data
+        // std::vector<COMPUTE_TYPE> verify_A(5);
+        // cudaMemcpy(verify_A.data(), d_A, 5 * sizeof(COMPUTE_TYPE), cudaMemcpyDeviceToHost);
+        // printf("  First 5 A values before kernel: %f %f %f %f %f\n",
+        //        (float)verify_A[0], (float)verify_A[1], (float)verify_A[2],
+        //        (float)verify_A[3], (float)verify_A[4]);
+        // printf("============================\n\n");
+
+        launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+            kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
         // Launch the specified kernel using unified dispatch
         if (is_mixprec_kernel(kernel_type)) {
             launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
@@ -860,6 +1092,36 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
             printf("ERROR: Non-mixprec kernels require FP32 types\n");
             return;
         }
+
+        // cudaError_t err = cudaGetLastError();
+        // printf("Kernel launch status: %s\n", cudaGetErrorString(err));
+
+        // cudaDeviceSynchronize();
+        // err = cudaGetLastError();
+        // printf("Kernel execution status: %s\n", cudaGetErrorString(err));
+
+        // // VALIDATE IMMEDIATELY - Don't do anything else first!
+        // printf("After kernel: d_C_kernel pointer = %p\n", d_C_kernel);
+
+        // // Copy just the first element to check
+        // ACCUMULATE_TYPE first_element;
+        // cudaMemcpy(&first_element, d_C_kernel, sizeof(ACCUMULATE_TYPE), cudaMemcpyDeviceToHost);
+        // printf("First element from d_C_kernel: %f\n", (float)first_element);
+
+        // // ✅ VALIDATE KERNEL OUTPUT
+        // validate_matrix_on_device(d_C_kernel, n, "Kernel Output C", sample == 0);
+
+         // Compute FP64 reference directly on device using same configuration as test kernel
+        // This ensures consistency with the cuBLAS kernel configuration from gemms.cu
+        compute_reference_and_norm_fp64_device<COMPUTE_TYPE><<<numBlocks, threadsPerBlock>>>(
+            d_A, d_B, d_C_reference_fp64, d_abs_AB_product, n);
+
+        // // ✅ VALIDATE REFERENCE
+        // validate_matrix_on_device(d_C_reference_fp64, n, "FP64 Reference C", sample == 0);
+
+        // // ✅ COMPARE KERNEL VS REFERENCE
+        // validate_matrix_difference(d_C_kernel, d_C_reference_fp64, n,
+        //                            "Kernel Output", "FP64 Reference", sample == 0);
 
         // Reset error accumulation array
         cudaMemset(d_error_results, 0, 2 * sizeof(double));
@@ -920,12 +1182,14 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     char folder[64];
     char filename[512];
 
-    // Determine folder based on mixprec mode (now simpler!)
-    if (areBothTypesFP32()) {
-        snprintf(folder, sizeof(folder), "data/UC_UA_FP32/");
-    } else {
+    // Determine folder based on kernel type, not data types
+    if (is_mixprec_kernel(kernel_type)) {
+        // Mixed precision kernels - include type info in folder name
         snprintf(folder, sizeof(folder), "data/UC_%s_UA_%s/",
-                 getComputeTypeString(), getAccumulateTypeString());
+             getComputeTypeString(), getAccumulateTypeString());
+    } else {
+        // Classical kernels - use generic folder (always FP32)
+        snprintf(folder, sizeof(folder), "data/UC_UA_FP32/");
     }
 
     mkdir(folder, static_cast<mode_t>(0777));

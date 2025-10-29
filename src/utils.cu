@@ -356,6 +356,7 @@ void launch_mixprec_kernel_by_type(KernelType kernel_type, ComputeType* d_A, Com
     switch(kernel_type) {
         case KERNEL_TILED_MIXPREC:
             // Call templated launch function with proper types
+            //printf("DEBUG: Launching matmul_tiled_mixprec with N=%d\n", n);
             launch_tiled_mixprec<ComputeType, AccumulateType>(d_A, d_B, d_C, n, blocks, threads);
             break;
 

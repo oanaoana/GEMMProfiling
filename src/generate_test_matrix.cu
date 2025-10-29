@@ -14,6 +14,7 @@
 #include <vector>
 #include <cmath>
 #include <time.h>
+#include <type_traits>  // for std::is_same_v
 #include <cuda_fp16.h>        // for __half
 #include <cuda_bf16.h>        // for __nv_bfloat16
 
@@ -804,15 +805,65 @@ void generate_matrix_device_with_seed_typed(T* d_matrix, int n, MatrixType type,
 // CUDA kernel for type conversion with kernel-aware dispatch
 template<typename SrcType, typename DstType>
 __global__ void convert_matrix_kernel(const SrcType* src, DstType* dst, int n) {
-    // Use 2D thread indexing consistent with GEMM kernels
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
+    // // DEBUG: First thread only
+    // if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+    //     printf("=== CONVERT_MATRIX_KERNEL ===\n");
+    //     printf("  SrcType size: %zu\n", sizeof(SrcType));
+    //     printf("  DstType size: %zu\n", sizeof(DstType));
+    //     printf("  Matrix size: %d x %d\n", n, n);
+    //     printf("  Grid: (%d, %d), Block: (%d, %d)\n",
+    //            gridDim.x, gridDim.y, blockDim.x, blockDim.y);
+
+    //     // Test the actual conversion
+    //     SrcType test_src = static_cast<SrcType>(0.75f);
+    //     DstType test_dst;
+
+    //     if constexpr (std::is_same_v<SrcType, float> && std::is_same_v<DstType, __half>) {
+    //         test_dst = __float2half(test_src);
+    //         printf("  Conversion test: float(0.75) -> __half = %f\n", __half2float(test_dst));
+    //     }
+
+    //     // Check first few values
+    //     printf("  First 5 src values: %f %f %f %f %f\n",
+    //            (float)src[0], (float)src[1], (float)src[2], (float)src[3], (float)src[4]);
+    // }
+
     if (row < n && col < n) {
-        int idx = row * n + col;  // Row-major indexing
-        dst[idx] = static_cast<DstType>(src[idx]);
+        int idx = row * n + col;
+
+        // Your existing conversion code
+        if constexpr (std::is_same_v<SrcType, float> && std::is_same_v<DstType, __half>) {
+            dst[idx] = __float2half(src[idx]);
+        }
+        else if constexpr (std::is_same_v<SrcType, float> && std::is_same_v<DstType, __nv_bfloat16>) {
+            dst[idx] = __float2bfloat16(src[idx]);
+        }
+        else if constexpr (std::is_same_v<SrcType, __half> && std::is_same_v<DstType, float>) {
+            dst[idx] = __half2float(src[idx]);
+        }
+        else if constexpr (std::is_same_v<SrcType, __nv_bfloat16> && std::is_same_v<DstType, float>) {
+            dst[idx] = __bfloat162float(src[idx]);
+        }
+        else {
+            // For other combinations, use static_cast
+            dst[idx] = static_cast<DstType>(src[idx]);
+        }
     }
+
+    // DEBUG: Check what was written
+    __syncthreads();
+    // if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+    //     printf("  First 5 dst values: %f %f %f %f %f\n",
+    //            (float)dst[0], (float)dst[1], (float)dst[2], (float)dst[3], (float)dst[4]);
+    //     printf("==============================\n");
+    // }
 }
+
+static_assert(!std::is_same_v<__half, float>, "Type traits working: __half != float");
+static_assert(std::is_same_v<float, float>, "Type traits working: float == float");
 
 // Fix: Correct template instantiation guards - use build-time checks instead of runtime
 template void generate_matrix_device_with_seed_typed<float>(float* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
@@ -821,11 +872,9 @@ template void generate_matrix_device_with_seed_typed<double>(double* d_matrix, i
 template __global__ void convert_matrix_kernel<float, double>(const float* src, double* dst, int n);
 template __global__ void convert_matrix_kernel<float, float>(const float* src, float* dst, int n);
 
-// Fix: Remove __CUDA_ARCH__ check - this is for device code, not template instantiation
-#if defined(__CUDA_FP16_TYPES_EXIST__)
 template void generate_matrix_device_with_seed_typed<__half>(__half* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
 template __global__ void convert_matrix_kernel<float, __half>(const float* src, __half* dst, int n);
-#endif
+
 // #if defined(__CUDA_BF16_TYPES_EXIST__)
 // template void generate_matrix_device_with_seed_typed<__nv_bfloat16>(__nv_bfloat16* d_matrix, int n, MatrixType type, unsigned long long seed, dim3 numBlocks, dim3 threadsPerBlock);
 // template __global__ void convert_matrix_kernel<float, __nv_bfloat16>(const float* src, __nv_bfloat16* dst, int n);

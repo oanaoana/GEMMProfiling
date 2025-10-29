@@ -6,6 +6,9 @@
 #include "cutlass/gemm/device/gemm.h"
 #include <vector_types.h>
 #include <vector>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <type_traits>
 
 // Naive implementation
 __global__ void matmul_naive(float *A, float *B, float *C, int N) {
@@ -855,36 +858,43 @@ void launch_cutlass_splitk_pairwise(float* d_A, float* d_B, float* d_C, int n, d
 }
 
 // Revised mixed-precision FMA supporting only the 4 required cases
-template<typename ComputeType, typename AccumType>
-__device__ __forceinline__ AccumType mixprec_fma(ComputeType a, ComputeType b, AccumType c) {
+template<typename ComputeType, typename AccumulateType>
+__device__ __forceinline__ AccumulateType mixprec_fma(ComputeType a, ComputeType b, AccumulateType c) {
     // Case 1: Baseline (Standard) - FP32 compute, FP32 accumulate
-    if constexpr (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, float>) {
+    if constexpr (std::is_same_v<ComputeType, float> && std::is_same_v<AccumulateType, float>) {
         return __fmaf_rn(a, b, c);
     }
     // Case 2: Mixed (Tensor Core Emulation) - FP16 compute, FP32 accumulate
-    else if constexpr (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumType, float>) {
-        return __fmaf_rn(__half2float(a), __half2float(b), c);
+    else if constexpr (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumulateType, float>) {
+        // CORRECT: Multiply in FP16, then convert product to FP32
+        __half prod_h = __hmul(a, b);          // FP16 multiply with FP16 rounding
+        return c + __half2float(prod_h);       // Convert to FP32 and accumulate
     }
-    // Case 3: Mixed (LLM Focus) - BF16 compute, FP32 accumulate
-    else if constexpr (std::is_same_v<ComputeType, __nv_bfloat16> && std::is_same_v<AccumType, float>) {
-        return __fmaf_rn(__bfloat162float(a), __bfloat162float(b), c);
-    }
+    // // Case 3: Mixed (LLM Focus) - BF16 compute, FP32 accumulate
+    // else if constexpr (std::is_same_v<ComputeType, __nv_bfloat16> && std::is_same_v<AccumulateType, float>) {
+    //     // BF16 multiply, then convert to FP32
+    //     __nv_bfloat16 prod_bf = __hmul_rn(a, b); // BF16 multiply
+    //     return c + __bfloat162float(prod_bf); // Convert to FP32 and accumulate
+    // }
     // Case 4: High Accuracy (Double) - FP32 compute, FP64 accumulate
-    else if constexpr (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, double>) {
+    else if constexpr (std::is_same_v<ComputeType, float> && std::is_same_v<AccumulateType, double>) {
         return __fma_rn(static_cast<double>(a), static_cast<double>(b), c);
     }
+    // Case 5: FP16/FP16 (pure FP16)
+    else if constexpr (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumulateType, __half>) {
+        // Pure FP16 computation with saturation
+        return __hfma(a, b, c);  // Native FP16 FMA
+    }
     else {
-        // Static assertion to catch unsupported combinations at compile time
         static_assert(
-            (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, float>) ||
-            (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumType, float>) ||
-            (std::is_same_v<ComputeType, __nv_bfloat16> && std::is_same_v<AccumType, float>) ||
-            (std::is_same_v<ComputeType, float> && std::is_same_v<AccumType, double>),
-            "Unsupported precision combination for mixprec_fma. Only fp32/fp32, fp16/fp32, bf16/fp32, fp32/fp64 are supported."
+            (std::is_same_v<ComputeType, float> && std::is_same_v<AccumulateType, float>) ||
+            (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumulateType, float>) ||
+            (std::is_same_v<ComputeType, __nv_bfloat16> && std::is_same_v<AccumulateType, float>) ||
+            (std::is_same_v<ComputeType, float> && std::is_same_v<AccumulateType, double>) ||
+            (std::is_same_v<ComputeType, __half> && std::is_same_v<AccumulateType, __half>),
+            "Unsupported precision combination"
         );
-
-        // This should never be reached due to static_assert, but provide fallback
-        return c + static_cast<AccumType>(a) * static_cast<AccumType>(b);
+        return c;
     }
 }
 
@@ -898,33 +908,62 @@ __global__ void matmul_tiled_mixprec(
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    __shared__ ComputeType tile_A[TILE_SIZE][TILE_SIZE];
-    __shared__ ComputeType tile_B[TILE_SIZE][TILE_SIZE];
+    // if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+    //     printf("\n=== KERNEL TYPE VERIFICATION ===\n");
+    //     printf("ComputeType size: %zu bytes\n", sizeof(ComputeType));
+    //     printf("AccumulateType size: %zu bytes\n", sizeof(AccumulateType));
+
+    //     // Read actual values and verify they're the right precision
+    //     ComputeType a0 = A[0];
+    //     ComputeType a1 = A[1];
+    //     ComputeType b0 = B[0];
+
+    //     printf("First 3 A values: %.8f %.8f %.8f\n",
+    //            (float)A[0], (float)A[1], (float)A[2]);
+    //     printf("First 3 B values: %.8f %.8f %.8f\n",
+    //            (float)B[0], (float)B[1], (float)B[2]);
+
+    //     // Test actual computation with the types
+    //     AccumulateType result = static_cast<AccumulateType>(a0) * static_cast<AccumulateType>(b0);
+    //     printf("Test computation: A[0] * B[0] = %.8f * %.8f = %.8f\n",
+    //            (float)a0, (float)b0, (float)result);
+
+    //     // Check raw bits to verify precision
+    //     if (sizeof(ComputeType) == 2) {
+    //         unsigned short* bits_a = (unsigned short*)&a0;
+    //         unsigned short* bits_b = (unsigned short*)&b0;
+    //         printf("Raw FP16 bits: A[0]=0x%04x, B[0]=0x%04x\n", *bits_a, *bits_b);
+    //     }
+
+    //     printf("================================\n\n");
+    // }
+
+
+    __shared__ ComputeType tile_A[TILE_SIZE][TILE_SIZE+1];
+    __shared__ ComputeType tile_B[TILE_SIZE][TILE_SIZE+1];
 
     AccumulateType sum = static_cast<AccumulateType>(0.0);
 
     for (int tile = 0; tile < (N + TILE_SIZE - 1) / TILE_SIZE; ++tile) {
-        // Load tile A - convert from AccumulateType to ComputeType
         int a_row = row;
         int a_col = tile * TILE_SIZE + threadIdx.x;
         if (a_row < N && a_col < N) {
-            tile_A[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(A[a_row * N + a_col]);
+            tile_A[threadIdx.y][threadIdx.x] = A[a_row * N + a_col];
         } else {
             tile_A[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(0.0);
         }
 
-        // Load tile B - convert from AccumulateType to ComputeType
         int b_row = tile * TILE_SIZE + threadIdx.y;
         int b_col = col;
         if (b_row < N && b_col < N) {
-            tile_B[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(B[b_row * N + b_col]);
+            tile_B[threadIdx.y][threadIdx.x] = B[b_row * N + b_col];
         } else {
             tile_B[threadIdx.y][threadIdx.x] = static_cast<ComputeType>(0.0);
         }
 
         __syncthreads();
 
-        // Compute partial sum using the revised mixprec_fma (supports only 4 cases)
+        // Compute partial sum using the revised mixprec_fma (supports only a few cases)
         #pragma unroll
         for (int k = 0; k < TILE_SIZE; ++k) {
             sum = mixprec_fma(tile_A[threadIdx.y][k], tile_B[k][threadIdx.x], sum);
@@ -934,6 +973,17 @@ __global__ void matmul_tiled_mixprec(
     }
 
     if (row < N && col < N) {
+        // // Check for invalid values before writing
+        // if (isnan(static_cast<float>(sum)) || isinf(static_cast<float>(sum))) {
+        //     // Print debug info (only for first few occurrences)
+        //     if (row == 0 && col < 5) {
+        //         printf("ERROR at (%d,%d): sum=%f\n", row, col, static_cast<float>(sum));
+        //     }
+        //     sum = static_cast<AccumulateType>(0);  // Replace with 0 to prevent propagation
+        // }
+        // if (row == 0 && col == 0) {
+        //     printf("DEBUG: First element sum = %f (should not be zero!)\n", static_cast<float>(sum));
+        // }
         C[row * N + col] = sum;
     }
 }
@@ -990,18 +1040,12 @@ __global__ void matmul_tiled_pairwise_mixprec(
         // Load A tile (row-major), converting from AccumulateType to ComputeType
         const int A_row = row;
         const int A_col = t * TILE_SIZE + tx;
-        tile_A[ty][tx] =
-            (A_row < N && A_col < N)
-            ? static_cast<ComputeType>(A[A_row * N + A_col])
-            : zlit<ComputeType>();
+        tile_A[ty][tx] = (A_row < N && A_col < N) ? A[A_row * N + A_col]: zlit<ComputeType>();
 
         // Load B tile (row-major), converting to ComputeType
         const int B_row = t * TILE_SIZE + ty;
         const int B_col = col;
-        tile_B[ty][tx] =
-            (B_row < N && B_col < N)
-            ? static_cast<ComputeType>(B[B_row * N + B_col])
-            : zlit<ComputeType>();
+        tile_B[ty][tx] = (B_row < N && B_col < N) ? B[B_row * N + B_col] : zlit<ComputeType>();
 
         __syncthreads();
 
@@ -1020,7 +1064,16 @@ __global__ void matmul_tiled_pairwise_mixprec(
         // Needed levels ≤ ceil_log2(num_tiles) + 1.
         // We keep the original "carry" pattern and cap at MAX_LEVELS-1.
         while ((occ_mask & (1u << l)) != 0u) {
-            p = static_cast<AccumulateType>(p + level_acc[l]);
+            //p = static_cast<AccumulateType>(p + level_acc[l]);
+            if constexpr (std::is_same_v<AccumulateType, __half>) {
+                p = __hadd(p, level_acc[l]);
+            } else if constexpr (std::is_same_v<AccumulateType, float>) {
+                p = p + level_acc[l];
+            } else if constexpr (std::is_same_v<AccumulateType, double>) {
+                p = p + level_acc[l];
+            } else {
+                p = static_cast<AccumulateType>(static_cast<float>(p) + static_cast<float>(level_acc[l]));
+            }
             occ_mask &= ~(1u << l);
             ++l;
             if (l >= MAX_LEVELS - 1) break; // cap carry chain
@@ -1033,7 +1086,18 @@ __global__ void matmul_tiled_pairwise_mixprec(
     AccumulateType result = zlit<AccumulateType>();
     #pragma unroll
     for (int l = 0; l < MAX_LEVELS; ++l) {
-        if (occ_mask & (1u << l)) result = static_cast<AccumulateType>(result + level_acc[l]);
+        //if (occ_mask & (1u << l)) result = static_cast<AccumulateType>(result + level_acc[l]);
+        if (occ_mask & (1u << l)) {
+            if constexpr (std::is_same_v<AccumulateType, __half>) {
+                result = __hadd(result, level_acc[l]);
+            } else if constexpr (std::is_same_v<AccumulateType, float>) {
+                result = result + level_acc[l];
+            } else if constexpr (std::is_same_v<AccumulateType, double>) {
+                result = result + level_acc[l];
+            } else {
+                result = static_cast<AccumulateType>(static_cast<float>(result) + static_cast<float>(level_acc[l]));
+            }
+        }
     }
 
     // Write-back
@@ -1049,16 +1113,68 @@ void launch_tiled_pairwise_mixprec(ComputeType* d_A, ComputeType* d_B, Accumulat
     matmul_tiled_pairwise_mixprec<ComputeType, AccumulateType><<<blocks, threads>>>(d_A, d_B, d_C, n);
 }
 
-// Explicit instantiations for the kernels
-template __global__ void matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
-    const COMPUTE_TYPE* A, const COMPUTE_TYPE* B, ACCUMULATE_TYPE* C, int N);
+// // Explicit instantiations for the kernels
+// template __global__ void matmul_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+//     const COMPUTE_TYPE* A, const COMPUTE_TYPE* B, ACCUMULATE_TYPE* C, int N);
 
-template __global__ void matmul_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
-    const COMPUTE_TYPE* A, const COMPUTE_TYPE* B, ACCUMULATE_TYPE* C, int N);
+// template __global__ void matmul_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+//     const COMPUTE_TYPE* A, const COMPUTE_TYPE* B, ACCUMULATE_TYPE* C, int N);
 
-// Explicit instantiations for the launch functions
-template void launch_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
-    COMPUTE_TYPE* d_A, COMPUTE_TYPE* d_B, ACCUMULATE_TYPE* d_C, int n, dim3 blocks, dim3 threads);
+// // Explicit instantiations for the launch functions
+// template void launch_tiled_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+//     COMPUTE_TYPE* d_A, COMPUTE_TYPE* d_B, ACCUMULATE_TYPE* d_C, int n, dim3 blocks, dim3 threads);
 
-template void launch_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
-    COMPUTE_TYPE* d_A, COMPUTE_TYPE* d_B, ACCUMULATE_TYPE* d_C, int n, dim3 blocks, dim3 threads);
+// template void launch_tiled_pairwise_mixprec<COMPUTE_TYPE, ACCUMULATE_TYPE>(
+//     COMPUTE_TYPE* d_A, COMPUTE_TYPE* d_B, ACCUMULATE_TYPE* d_C, int n, dim3 blocks, dim3 threads);
+
+// If I need explicit instantiations for other combinations, I can add them here:
+
+// FP16 compute, FP32 accumulate
+template __global__ void matmul_tiled_mixprec<__half, float>(
+    const __half* A, const __half* B, float* C, int N);
+template __global__ void matmul_tiled_pairwise_mixprec<__half, float>(
+    const __half* A, const __half* B, float* C, int N);
+template void launch_tiled_mixprec<__half, float>(
+    __half* d_A, __half* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+template void launch_tiled_pairwise_mixprec<__half, float>(
+    __half* d_A, __half* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+
+// FP32 compute, FP32 accumulate
+template __global__ void matmul_tiled_mixprec<float, float>(
+    const float* A, const float* B, float* C, int N);
+template __global__ void matmul_tiled_pairwise_mixprec<float, float>(
+    const float* A, const float* B, float* C, int N);
+template void launch_tiled_mixprec<float, float>(
+    float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+template void launch_tiled_pairwise_mixprec<float, float>(
+    float* d_A, float* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+
+// FP16 compute, FP16 accumulate (pure FP16)
+template __global__ void matmul_tiled_mixprec<__half, __half>(
+    const __half* A, const __half* B, __half* C, int N);
+template __global__ void matmul_tiled_pairwise_mixprec<__half, __half>(
+    const __half* A, const __half* B, __half* C, int N);
+template void launch_tiled_mixprec<__half, __half>(
+    __half* d_A, __half* d_B, __half* d_C, int n, dim3 blocks, dim3 threads);
+template void launch_tiled_pairwise_mixprec<__half, __half>(
+    __half* d_A, __half* d_B, __half* d_C, int n, dim3 blocks, dim3 threads);
+
+// // BF16 compute, FP32 accumulate
+// template __global__ void matmul_tiled_mixprec<__nv_bfloat16, float>(
+//     const __nv_bfloat16* A, const __nv_bfloat16* B, float* C, int N);
+// template __global__ void matmul_tiled_pairwise_mixprec<__nv_bfloat16, float>(
+//     const __nv_bfloat16* A, const __nv_bfloat16* B, float* C, int N);
+// template void launch_tiled_mixprec<__nv_bfloat16, float>(
+//     __nv_bfloat16* d_A, __nv_bfloat16* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+// template void launch_tiled_pairwise_mixprec<__nv_bfloat16, float>(
+//     __nv_bfloat16* d_A, __nv_bfloat16* d_B, float* d_C, int n, dim3 blocks, dim3 threads);
+
+// // FP32 compute, FP64 accumulate
+// template __global__ void matmul_tiled_mixprec<float, double>(
+//     const float* A, const float* B, double* C, int N);
+// template __global__ void matmul_tiled_pairwise_mixprec<float, double>(
+//     const float* A, const float* B, double* C, int N);
+// template void launch_tiled_mixprec<float, double>(
+//     float* d_A, float* d_B, double* d_C, int n, dim3 blocks, dim3 threads);
+// template void launch_tiled_pairwise_mixprec<float, double>(
+//     float* d_A, float* d_B, double* d_C, int n, dim3 blocks, dim3 threads);

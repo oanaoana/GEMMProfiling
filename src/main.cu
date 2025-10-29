@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
             }
 
             char output_name[128];
-            snprintf(output_name, sizeof(output_name), "error_analysis_%s", test_name);
+            snprintf(output_name, sizeof(output_name), "error_analysis");
 
             run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
             break;
@@ -171,7 +171,7 @@ int main(int argc, char **argv) {
 
             KernelType kernel_type = getKernelTypeFromName(test_name);
             char output_name[128];
-            snprintf(output_name, sizeof(output_name), "ulp_analysis_%s", test_name);
+            snprintf(output_name, sizeof(output_name), "ulp_analysis");
 
             run_ulp_samples_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
             break;
@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
             printf("\n[1/2] Running Error Analysis...\n");
             KernelType kernel_type = getKernelTypeFromName(test_name);
             char output_name[128];
-            snprintf(output_name, sizeof(output_name), "complete_analysis_%s", test_name);
+            snprintf(output_name, sizeof(output_name), "complete_analysis");
 
             run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
 

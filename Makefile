@@ -1,6 +1,6 @@
 # CUDA Compiler and flags
 CXX = nvcc
-CXXFLAGS = -O3 -std=c++17
+CXXFLAGS = -O3 -std=c++17 -arch=sm_89
 INCLUDES = -I./include -I/home/oana/cutlass/include
 
 # CUTLASS support
