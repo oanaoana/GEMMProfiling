@@ -25,9 +25,15 @@ from io import StringIO
 DATA_FOLDER = "data/UC_UA_FP32"  # Change this to "data" for current data
 OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
 
+# Plot selection flags - set to False to disable specific plot types
+PLOT_BASIC_METRICS = True          # E_AB/u_c, E_AB/beta, E_AB, std plots
+PLOT_SPREAD_CLOUD = False           # Spread cloud plots showing P10-P95 deviation
+PLOT_DEFF = False                   # Effective depth plots
+PLOT_CALIBRATION = False            # Calibration comparison plots (experimental vs predicted)
+
 # Select which matrix types to process (None = all available)
 # Available types: '2powers', 'illcond', 'uniform_positive', 'wellcond', 'zeromean'
-MATRIX_TYPES = ['uniform_positive', 'wellcond']  # Set to None for all, or list like ['2powers', 'wellcond']
+MATRIX_TYPES = ['uniform_positive', 'wellcond', '2powers', 'illcond', 'zeromean']  # Set to None for all, or list like ['2powers', 'wellcond']
 
 # Color scheme: 3 colors for 3 kernel families
 KERNEL_COLORS = {
@@ -1074,47 +1080,58 @@ def main():
     else:
         print(f"Processing all matrix types: {sorted(df['matrix_type'].unique())}")
 
-    # Create plots
-    create_beta_plots(df, actual_matrix_sizes)
+    # Create plots based on flags
+    if PLOT_BASIC_METRICS:
+        print("\n=== Creating basic metric plots ===")
+        create_beta_plots(df, actual_matrix_sizes)
+    else:
+        print("\n=== Skipping basic metric plots (PLOT_BASIC_METRICS=False) ===")
 
     # Create standalone spread cloud plots
-    create_spread_cloud_plots(df, actual_matrix_sizes)
-
-    # Create effective depth plot for selected kernel
-    available_kernels = sorted(df['kernel_type'].unique())
-    print(f"Available kernels: {available_kernels}")
-    print(f"Creating Deff plot for selected kernel: {DEFF_SELECT_KERNEL}")
-
-    create_single_kernel_deff_plot(df, actual_matrix_sizes, DEFF_SELECT_KERNEL)
-
-    # Optionally create Deff plots for all kernels
-    if DEFF_PLOT_ALL_KERNELS:
-        print(f"DEFF_PLOT_ALL_KERNELS is True - creating plots for all kernels")
-        deff_all_kernels(df, actual_matrix_sizes)
+    if PLOT_SPREAD_CLOUD:
+        print("\n=== Creating spread cloud plots ===")
+        create_spread_cloud_plots(df, actual_matrix_sizes)
     else:
-        print(f"DEFF_PLOT_ALL_KERNELS is False - only plotting selected kernel")
+        print("\n=== Skipping spread cloud plots (PLOT_SPREAD_CLOUD=False) ===")
 
-    # Create calibration comparison plots (experimental vs predicted E/u)
-    # Flat algorithms: cuBLAS, tiled, and CUTLASS flat
-    flat_kernels = ['cublas', 'tiled', 'cutlass_splitk_flat']
-    create_calibration_comparison_plots(df, actual_matrix_sizes, flat_kernels, "calibration_flat")
+    if PLOT_DEFF:
+        print("\n=== Creating effective depth plots ===")
+        available_kernels = sorted(df['kernel_type'].unique())
+        print(f"Available kernels: {available_kernels}")
+        print(f"Creating Deff plot for selected kernel: {DEFF_SELECT_KERNEL}")
 
-    # Pairwise algorithms: cutlass_splitk_pairwise and tiled_pairwise
-    pairwise_kernels = ['cutlass_splitk_pairwise', 'tiled_pairwise']
-    create_calibration_comparison_plots(df, actual_matrix_sizes, pairwise_kernels, "calibration_pairwise")
+        create_single_kernel_deff_plot(df, actual_matrix_sizes, DEFF_SELECT_KERNEL)
 
-    # ADD THIS NEW LINE:
+        if DEFF_PLOT_ALL_KERNELS:
+            print(f"DEFF_PLOT_ALL_KERNELS is True - creating plots for all kernels")
+            deff_all_kernels(df, actual_matrix_sizes)
+    else:
+        print("\n=== Skipping effective depth plots (PLOT_DEFF=False) ===")
+
+    if PLOT_CALIBRATION:
+        print("\n=== Creating calibration comparison plots ===")
+        # Flat algorithms
+        flat_kernels = ['cublas', 'tiled', 'cutlass_splitk_flat']
+        create_calibration_comparison_plots(df, actual_matrix_sizes, flat_kernels, "calibration_flat")
+
+        # Pairwise algorithms
+        pairwise_kernels = ['cutlass_splitk_pairwise', 'tiled_pairwise']
+        create_calibration_comparison_plots(df, actual_matrix_sizes, pairwise_kernels, "calibration_pairwise")
+    else:
+        print("\n=== Skipping calibration plots (PLOT_CALIBRATION=False) ===")
+
+
     plot_tiled_vs_pairwise_std(df, actual_matrix_sizes)
 
     print("\n✓ All plots created successfully!")
     print("Check plots/ directory for:")
-    print("  - E_AB_over_u_*.eps/.png (5 files each format)")
-    print("  - spread_cloud_*.eps/.png (5 files each format - standalone spread cloud plots)")
-    print("  - E_AB_over_beta_*.eps/.png (5 files each format)")
-    print("  - E_AB_*.eps/.png (5 files each format)")
-    print("  - Deff_all_kernels_*.eps/.png (effective depth plots - all kernels combined)")
-    print("  - calibration_flat_*.eps/.png (experimental vs predicted E/u for flat algorithms)")
-    print("  - calibration_pairwise_*.eps/.png (experimental vs predicted E/u for pairwise algorithms)")
+    # print("  - E_AB_over_u_*.eps/.png (5 files each format)")
+    # print("  - spread_cloud_*.eps/.png (5 files each format - standalone spread cloud plots)")
+    # print("  - E_AB_over_beta_*.eps/.png (5 files each format)")
+    # print("  - E_AB_*.eps/.png (5 files each format)")
+    # print("  - Deff_all_kernels_*.eps/.png (effective depth plots - all kernels combined)")
+    # print("  - calibration_flat_*.eps/.png (experimental vs predicted E/u for flat algorithms)")
+    # print("  - calibration_pairwise_*.eps/.png (experimental vs predicted E/u for pairwise algorithms)")
 
 if __name__ == "__main__":
     main()

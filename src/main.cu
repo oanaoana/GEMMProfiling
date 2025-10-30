@@ -8,6 +8,8 @@
 #include "../include/error_analysis.cuh"
 #include "../include/utils.cuh"
 #include "../include/config.h"
+#include <sys/stat.h>
+#include <sys/types.h>
 
 typedef enum {
     MODE_NONE = 0,
@@ -18,6 +20,8 @@ typedef enum {
     MODE_ASSESS_RESOURCES,
     MODE_PER_TILE_ANALYSIS  // Add new mode
 } RunMode;
+
+char g_data_folder[256] = {0};
 
 void printUsage() {
     printf("Usage: ./main <mode> [options]\n\n");
@@ -135,6 +139,19 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Set global data folder based on kernel type
+    KernelType kernel_type = getKernelTypeFromName(test_name);
+    if (is_mixprec_kernel(kernel_type)) {
+        snprintf(g_data_folder, sizeof(g_data_folder), "data/UC_%s_UA_%s",
+                 getComputeTypeString(), getAccumulateTypeString());
+    } else {
+        snprintf(g_data_folder, sizeof(g_data_folder), "data/UC_UA_FP32");
+    }
+
+    // Create the folder
+    mkdir(g_data_folder, static_cast<mode_t>(0777));
+    printf("Using data folder: %s\n", g_data_folder);
+
     cudaProfilerStart();
 
     // Execute based on mode
@@ -159,10 +176,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
 
-            char output_name[128];
-            snprintf(output_name, sizeof(output_name), "error_analysis");
-
-            run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
+            run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, true);
             break;
         }
 
@@ -170,10 +184,8 @@ int main(int argc, char **argv) {
             printf("\nRunning ULP analysis: %s at size %d\n", test_name, matrix_size);
 
             KernelType kernel_type = getKernelTypeFromName(test_name);
-            char output_name[128];
-            snprintf(output_name, sizeof(output_name), "ulp_analysis");
 
-            run_ulp_samples_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
+            run_ulp_samples_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, true);
             break;
         }
 
@@ -183,10 +195,8 @@ int main(int argc, char **argv) {
             // First run error analysis
             printf("\n[1/2] Running Error Analysis...\n");
             KernelType kernel_type = getKernelTypeFromName(test_name);
-            char output_name[128];
-            snprintf(output_name, sizeof(output_name), "complete_analysis");
 
-            run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, output_name);
+            run_multi_sample_analysis(matrix_type, kernel_type, matrix_size, DEFAULT_NUM_SAMPLES, true);
 
             // Then run performance test
             printf("\n[2/2] Running Performance Test...\n");
@@ -206,11 +216,28 @@ int main(int argc, char **argv) {
                 return 1;
             }
 
-            char output_name[128];
-            snprintf(output_name, sizeof(output_name), "per_tile_%s", test_name);
-
             run_per_tile_reference_analysis(matrix_type, kernel_type, matrix_size,
-                                           sample_index, output_name, true);
+                                           sample_index, true);
+            break;
+        }
+
+        case MODE_ASSESS_RESOURCES: {
+            // Print device-level performance info
+            printDevicePerformanceInfo();
+
+            // Print cache info
+            printCacheInfo();
+
+            KernelType kernel_type = getKernelTypeFromName(test_name);
+
+            if (kernel_type == static_cast<KernelType>(-1)) {
+                printf("Error: Invalid kernel name '%s'\n", test_name);
+                return 1;
+            }
+
+            // Single function call does everything
+            assess_kernel_resources(kernel_type, matrix_size);
+
             break;
         }
 

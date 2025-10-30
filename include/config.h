@@ -74,7 +74,7 @@
 #endif
 
 #ifndef MAX_LEVELS
-#define MAX_LEVELS 10
+#define MAX_LEVELS 13
 #endif
 
 // ============================================================================
@@ -166,6 +166,16 @@ extern const int NUM_SIZES;
 #ifndef ERROR_SEED
 #define ERROR_SEED 42
 #endif
+
+// ============================================================================
+// DATA FOLDER MANAGEMENT
+// ============================================================================
+
+// Global data folder path - initialized at runtime based on precision
+extern char g_data_folder[256];
+
+// Function to initialize the data folder path
+void initialize_data_folder();
 
 // ============================================================================
 // PRECISION AND UNIT ROUNDOFF CONSTANTS - DECLARATIONS

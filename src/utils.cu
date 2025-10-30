@@ -4,9 +4,11 @@
 #include <string.h>
 #include <math.h>
 #include "../include/gemms.cuh"
-#include "../include/benchmark.h"  // For BLOCK_SIZE, TILE_SIZE constants
+#include "../include/benchmark.h"
 #include <type_traits>
-#include <typeinfo>               // Add this line!
+#include <typeinfo>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 void fill_matrix(float *mat, int N) {
     for (int i = 0; i < N * N; ++i) {
@@ -24,31 +26,63 @@ void printDevicePerformanceInfo() {
         return;
     }
 
+    // Calculate metrics
+    double memory_clock_rate = prop.memoryClockRate / 1000000.0; // kHz to GHz
+    double bus_width = prop.memoryBusWidth;
+    double peak_bandwidth = 2.0 * memory_clock_rate * (bus_width / 8); // GB/s
+    int cuda_cores = prop.multiProcessorCount * 128;
+    double gpu_clock_ghz = prop.clockRate / 1000000.0;
+    double peak_gflops = 2.0 * cuda_cores * gpu_clock_ghz;
+    double arithmetic_intensity_ridge = peak_gflops / peak_bandwidth;
+
+    // Print to console
     printf("\n===== DEVICE INFORMATION =====\n");
     printf("Device: %s\n", prop.name);
     printf("Compute capability: %d.%d\n", prop.major, prop.minor);
     printf("Multiprocessor count: %d\n", prop.multiProcessorCount);
-
-    // Calculate peak memory bandwidth (GB/s)
-    // For RTX 4080, memory clock is ~21 GHz
-    double memory_clock_rate = prop.memoryClockRate / 1000000.0; // Convert from kHz to GHz
-    double bus_width = prop.memoryBusWidth;
-    double peak_bandwidth = 2.0 * memory_clock_rate * (bus_width / 8); // GB/s
-
-    // Calculate theoretical peak FLOPS for single precision
-    // For RTX 4080, CUDA cores = 9728
-    int cuda_cores = prop.multiProcessorCount * 128; // Approximate cores based on SM count
-    double gpu_clock_ghz = prop.clockRate / 1000000.0; // Convert kHz to GHz
-    double peak_gflops = 2.0 * cuda_cores * gpu_clock_ghz; // 2 ops per cycle with FMA
-
-    printf("Memory clock rate (base estimate): %.1f GHz\n", memory_clock_rate);
+    printf("Memory clock rate: %.1f GHz\n", memory_clock_rate);
     printf("Memory bus width: %d bits\n", prop.memoryBusWidth);
     printf("Peak memory bandwidth: %.2f GB/s\n", peak_bandwidth);
     printf("CUDA cores (estimate): %d\n", cuda_cores);
     printf("GPU clock: %.3f GHz\n", gpu_clock_ghz);
     printf("Peak performance (FP32): %.2f TFLOP/s\n", peak_gflops / 1000);
-    printf("Arithmetic intensity ridge point: %.2f FLOP/byte\n", peak_gflops / peak_bandwidth);
-    printf("\n");
+    printf("Arithmetic intensity ridge point: %.2f FLOP/byte\n", arithmetic_intensity_ridge);
+    printf("Max threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
+    printf("Max threads per block: %d\n", prop.maxThreadsPerBlock);
+    printf("Shared memory per SM: %.2f KB\n", prop.sharedMemPerMultiprocessor / 1024.0);
+    printf("L2 Cache: %.2f MB\n", prop.l2CacheSize / (1024.0 * 1024.0));
+    printf("==============================\n\n");
+
+    // Write to CSV file
+    char filename[512];
+    snprintf(filename, sizeof(filename), "data/deviceprops.csv");
+
+    FILE* f = fopen(filename, "w");
+    if (f) {
+        fprintf(f, "property,value\n");
+        fprintf(f, "device_name,%s\n", prop.name);
+        fprintf(f, "compute_capability,%d.%d\n", prop.major, prop.minor);
+        fprintf(f, "sm_count,%d\n", prop.multiProcessorCount);
+        fprintf(f, "memory_clock_ghz,%.3f\n", memory_clock_rate);
+        fprintf(f, "memory_bus_width_bits,%d\n", prop.memoryBusWidth);
+        fprintf(f, "peak_bandwidth_gb_s,%.2f\n", peak_bandwidth);
+        fprintf(f, "cuda_cores_estimate,%d\n", cuda_cores);
+        fprintf(f, "gpu_clock_ghz,%.3f\n", gpu_clock_ghz);
+        fprintf(f, "peak_gflops_fp32,%.2f\n", peak_gflops);
+        fprintf(f, "peak_tflops_fp32,%.2f\n", peak_gflops / 1000);
+        fprintf(f, "arithmetic_intensity_ridge,%.2f\n", arithmetic_intensity_ridge);
+        fprintf(f, "max_threads_per_sm,%d\n", prop.maxThreadsPerMultiProcessor);
+        fprintf(f, "max_threads_per_block,%d\n", prop.maxThreadsPerBlock);
+        fprintf(f, "max_blocks_per_sm,%d\n", prop.maxBlocksPerMultiProcessor);
+        fprintf(f, "shared_mem_per_sm_kb,%.2f\n", prop.sharedMemPerMultiprocessor / 1024.0);
+        fprintf(f, "shared_mem_per_block_kb,%.2f\n", prop.sharedMemPerBlock / 1024.0);
+        fprintf(f, "registers_per_sm,%d\n", prop.regsPerMultiprocessor);
+        fprintf(f, "registers_per_block,%d\n", prop.regsPerBlock);
+        fprintf(f, "l2_cache_size_mb,%.2f\n", prop.l2CacheSize / (1024.0 * 1024.0));
+        fprintf(f, "warp_size,%d\n", prop.warpSize);
+        fclose(f);
+        printf("Device properties written to: %s\n", filename);
+    }
 }
 
 // Compute reference result in FP64 on GPU using cuBLAS

@@ -354,9 +354,14 @@ void runKernelPerformance(KernelType kernel_type, int n) {
     cudaMemcpy(d_C, h_C, size, cudaMemcpyHostToDevice);
 
     // Create descriptive filename
-    char filename[256];
-    snprintf(filename, sizeof(filename), "data/perf_%s_%d_%s.csv",
-             kernel_name, n, getComputeTypeString());
+    char filename[512];
+
+    // Use global folder
+    snprintf(filename, sizeof(filename), "%s/perf_%s_%d_%s.csv",
+         g_data_folder,
+         kernel_name,
+         n,
+         getComputeTypeString());
 
     printf("Writing performance data to: %s\n", filename);
 

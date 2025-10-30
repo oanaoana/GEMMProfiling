@@ -4,10 +4,9 @@ import matplotlib.pyplot as plt
 
 # Define the precision folders you want to compare
 precision_folders = [
-    #"data/UC_FP16_UA_FP16",
-    "data/UC_FP32_UA_FP32",
+    "data/UC_FP16_UA_FP16",
+    "data/UC_FP16_UA_FP32",
     "data/UC_UA_FP32"
-
 ]
 
 kernels = ["tiled_mixprec", "tiled_pairwise_mixprec"]
@@ -61,10 +60,12 @@ for folder in precision_folders:
             csv_path = f"{folder}/error_analysis_{kernel}_{select_matrix}_n{size}.csv"
             if os.path.exists(csv_path):
                 df = pd.read_csv(csv_path)
-                # Assume your CSV has columns: 'gflops', 'error_metric'
+                # Read BOTH error metrics
                 kernel_data.append({
                     "size": size,
-                    "error": df['|C-C_ref|/(|A||B|)_avg'].iloc[0]  # or your error metric
+                    "error": df['|C-C_ref|/(|A||B|)_avg'].iloc[0],
+                    "E_{AB}/u_c": df['E_{AB}/u_c'].iloc[0],
+                    "E_{AB}/beta": df['E_{AB}/beta'].iloc[0]
                 })
         data[label][kernel] = pd.DataFrame(kernel_data)
 
@@ -97,11 +98,87 @@ plt.grid(True, which='both', linestyle='--', alpha=0.6)
 plt.tight_layout()
 
 # Save the figure
-output_path = f"plots/multiprec_error_analysis.{OUTPUT_FORMAT}"
+output_path = f"plots/multiprec_error_normalized.{OUTPUT_FORMAT}"
 if OUTPUT_FORMAT == "both":
-    plt.savefig("plots/multiprec_error.png", dpi=300, bbox_inches='tight')
-    plt.savefig("plots/multiprec_error.eps", dpi=300, bbox_inches='tight')
+    plt.savefig("plots/multiprec_error_normalized.png", dpi=300, bbox_inches='tight')
+    plt.savefig("plots/multiprec_error_normalized.eps", dpi=300, bbox_inches='tight')
 else:
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
 
-plt.show()
+# Second plot: E_{AB}/u_c vs matrix size
+plt.figure(figsize=(10, 7))
+for label, kernels_data in data.items():
+    for kernel, df in kernels_data.items():
+        if not df.empty and 'E_{AB}/u_c' in df.columns:
+            plt.plot(
+                df['size'], df['E_{AB}/u_c'],
+                marker=MARKER_MAP.get(kernel, 'o'),
+                color=COLOR_MAP.get(label, 'purple'),
+                linestyle=LINESTYLE_MAP.get(label, '-'),
+                label=f"{kernel.replace('_', ' ').title()} ({label.replace('_', ' ')})",
+                markersize=MARKER_SIZE,
+                linewidth=LINE_WIDTH,
+            )
+
+plt.xlabel("Matrix Size (N)",
+           fontsize=AXIS_LABEL_FONTSIZE,
+           weight='bold' if AXIS_LABEL_BOLD else 'normal')
+plt.ylabel(r"$E_{AB}/u_c$",
+           fontsize=AXIS_LABEL_FONTSIZE,
+           weight='bold' if AXIS_LABEL_BOLD else 'normal')
+plt.yscale('log')
+plt.xticks(matrix_sizes, [str(s) for s in matrix_sizes], fontsize=TICK_LABEL_FONTSIZE)
+plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
+plt.legend(fontsize=LEGEND_FONTSIZE)
+plt.title("Computational Error normalized by Compute Unit Precision", fontsize=TITLE_FONTSIZE)
+plt.grid(True, which='both', linestyle='--', alpha=0.6)
+plt.tight_layout()
+
+# Save the figure
+output_path = f"plots/multiprec_E_AB_over_uc.{OUTPUT_FORMAT}"
+if OUTPUT_FORMAT == "both":
+    plt.savefig("plots/multiprec_E_AB_over_uc.png", dpi=300, bbox_inches='tight')
+    plt.savefig("plots/multiprec_E_AB_over_uc.eps", dpi=300, bbox_inches='tight')
+else:
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+
+print("\nAll plots generated successfully!")
+
+# Third plot: E_{AB}/beta vs matrix size
+plt.figure(figsize=(10, 7))
+for label, kernels_data in data.items():
+    for kernel, df in kernels_data.items():
+        if not df.empty and 'E_{AB}/beta' in df.columns:
+            plt.plot(
+                df['size'], df['E_{AB}/beta'],
+                marker=MARKER_MAP.get(kernel, 'o'),
+                color=COLOR_MAP.get(label, 'purple'),
+                linestyle=LINESTYLE_MAP.get(label, '-'),
+                label=f"{kernel.replace('_', ' ').title()} ({label.replace('_', ' ')})",
+                markersize=MARKER_SIZE,
+                linewidth=LINE_WIDTH,
+            )
+
+plt.xlabel("Matrix Size (N)",
+           fontsize=AXIS_LABEL_FONTSIZE,
+           weight='bold' if AXIS_LABEL_BOLD else 'normal')
+plt.ylabel(r"$E_{AB}/\beta$",
+           fontsize=AXIS_LABEL_FONTSIZE,
+           weight='bold' if AXIS_LABEL_BOLD else 'normal')
+plt.yscale('log')
+plt.xticks(matrix_sizes, [str(s) for s in matrix_sizes], fontsize=TICK_LABEL_FONTSIZE)
+plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
+plt.legend(fontsize=LEGEND_FONTSIZE)
+plt.title("Computational Error normalized by Beta", fontsize=TITLE_FONTSIZE)
+plt.grid(True, which='both', linestyle='--', alpha=0.6)
+plt.tight_layout()
+
+# Save the figure
+output_path = f"plots/multiprec_E_AB_over_beta.{OUTPUT_FORMAT}"
+if OUTPUT_FORMAT == "both":
+    plt.savefig("plots/multiprec_E_AB_over_beta.png", dpi=300, bbox_inches='tight')
+    plt.savefig("plots/multiprec_E_AB_over_beta.eps", dpi=300, bbox_inches='tight')
+else:
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+
+print("\nAll plots generated successfully!")

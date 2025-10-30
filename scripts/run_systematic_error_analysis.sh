@@ -2,7 +2,7 @@
 
 # Systematic Error Analysis Script
 # ================================
-# This script runs error analysis for all combinations defined in systematic_config.sh
+# This script runs error analysis for all combinations defined in systematic.config
 
 echo "=== Systematic Error Analysis (Full Run) ==="
 echo ""
@@ -42,83 +42,88 @@ echo ""
 
 # Source the configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/systematic_config.sh"
-
-echo "Running systematic error analysis (FP32 only)..."
-echo "Data folder: $DATA_FOLDER"
-# Create data folder
-mkdir -p "$DATA_FOLDER"
-
-# Build with FP32
-make clean
-make COMPUTE_TYPE="$COMPUTE_TYPE" ACCUMULATE_TYPE="$ACCUMULATE_TYPE"
-if [ $? -ne 0 ]; then
-    echo "ERROR: Build failed. Exiting."
-    exit 1
-fi
-
-echo "Starting systematic error analysis..."
-total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
-echo "Total configurations: ${#KERNELS[@]} kernels × ${#MATRIX_TYPES[@]} matrix types × ${#SIZES[@]} sizes = $total_tests tests"
-echo "Estimated time: ~30-45 minutes"
-echo ""
+source "$SCRIPT_DIR/systematic.config"
 
 echo "Configuration:"
 echo "  Kernels: ${KERNELS[*]}"
 echo "  Matrix Types: ${MATRIX_TYPES[*]}"
 echo "  Sizes: ${SIZES[*]}"
+echo "  Data folder: $DATA_FOLDER"
 echo ""
 
-# Counter for progress tracking
-current_test=0
+# Create data folder
+mkdir -p "$DATA_FOLDER"
 
-# Start timestamp
+# Check if main executable exists
+if [ ! -f "./main" ]; then
+    echo "Building main executable..."
+    make clean
+    make COMPUTE_TYPE="$COMPUTE_TYPE" ACCUMULATE_TYPE="$ACCUMULATE_TYPE"
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Build failed. Exiting."
+        exit 1
+    fi
+fi
+
+echo "Starting systematic error analysis..."
+total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
+echo "Total configurations: ${#KERNELS[@]} kernels × ${#MATRIX_TYPES[@]} matrix types × ${#SIZES[@]} sizes = $total_tests tests"
+echo ""
+
+# Count total configurations
+total_tests=$((${#KERNELS[@]} * ${#MATRIX_TYPES[@]} * ${#SIZES[@]}))
+echo "Total configurations: $total_tests tests"
+echo ""
+
+# Counters
+generated=0
+existed=0
+failed=0
 start_time=$(date +%s)
 
 # Run all combinations
 for kernel in "${KERNELS[@]}"; do
-    echo "=== Testing kernel: $kernel ==="
+    echo "=== Kernel: $kernel ==="
 
     for matrix_type in "${MATRIX_TYPES[@]}"; do
-        echo "  Matrix type: $matrix_type"
-
         for size in "${SIZES[@]}"; do
-            current_test=$((current_test + 1))
+            expected_file="$DATA_FOLDER/error_analysis_${kernel}_${matrix_type}_n${size}.csv"
 
-            echo "    [$current_test/$total_tests] Size: $size"
+            if [ ! -f "$expected_file" ]; then
+                echo "  Generating: $kernel, matrix=$matrix_type, size=${size}x${size}"
+                ./main --error-analysis --test="$kernel" --size="$size" --matrix-type="$matrix_type"
 
-            # Run the error analysis
-            ./main --error-analysis --test="$kernel" --size="$size" --matrix-type="$matrix_type"
-
-            # Check if the command succeeded
-            if [ $? -ne 0 ]; then
-                echo "    ERROR: Failed test - kernel:$kernel, matrix_type:$matrix_type, size:$size"
-                echo "    Continuing with next test..."
+                if [ $? -eq 0 ]; then
+                    ((generated++))
+                else
+                    echo "  ERROR: Failed - kernel:$kernel, matrix:$matrix_type, size:$size"
+                    ((failed++))
+                fi
+            else
+                ((existed++))
             fi
         done
-        echo ""
     done
     echo ""
 done
 
-# End timestamp and duration calculation
+# End timestamp and duration
 end_time=$(date +%s)
 duration=$((end_time - start_time))
 minutes=$((duration / 60))
 seconds=$((duration % 60))
 
 echo "=== Error Analysis Complete ==="
-echo "Total time: ${minutes}m ${seconds}s"
+echo "Time: ${minutes}m ${seconds}s"
+echo "Generated: $generated"
+echo "Already existed: $existed"
+echo "Failed: $failed"
+echo "Total: $((generated + existed + failed))/$total_tests"
 echo ""
-
-# Count generated files
-summary_files=$(find "$DATA_FOLDER" -name "error_analysis_*_n*.csv" | wc -l)
-echo "Generated $summary_files summary files in $DATA_FOLDER directory"
-
+echo "Results saved to: $DATA_FOLDER"
 echo ""
 echo "Next steps:"
 echo "  python scripts/plot_beta_ratios.py"
-echo ""
 
 # Only show screen info if we're actually in screen
 if [ -n "$STY" ]; then

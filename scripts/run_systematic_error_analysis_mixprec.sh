@@ -42,7 +42,7 @@ echo ""
 
 # Source the configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/systematic_config_mixprec.sh"
+source "$SCRIPT_DIR/mixprec.config"
 
 # Helper function to convert precision names to C++ types
 get_cpp_type() {

@@ -496,7 +496,7 @@ static inline unsigned long long sum_bins(const unsigned long long B[NUM_BINS]){
     unsigned long long s=0; for (int i=0;i<NUM_BINS;++i) s+=B[i]; return s;
 }
 
-void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible) {
+void run_ulp_samples_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, bool reproducible) {
     printf("\n=== ULP Analysis ===\n");
     printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Samples: %d\n",
            (int)matrix_type, (int)kernel_type, n, n, num_samples);
@@ -933,7 +933,7 @@ void validate_matrix_difference(const T1* d_matrix1, const T2* d_matrix2, int n,
 // - Test kernel: Uses kernel-specific optimized configuration
 // - Reference: Uses standard 2D tiled configuration (kernel-independent)
 // - Helper kernels: Use standard 1D configurations (efficient for element-wise ops)
-void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, const char* output_prefix, bool reproducible) {
+void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, int n, int num_samples, bool reproducible) {
     TypeInfo compute_info = getComputeTypeInfo();
     TypeInfo accumulate_info = getAccumulateTypeInfo();
 
@@ -1080,8 +1080,6 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
         //        (float)verify_A[3], (float)verify_A[4]);
         // printf("============================\n\n");
 
-        launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
-            kernel_type, d_A, d_B, d_C_kernel, n, numBlocks, threadsPerBlock);
         // Launch the specified kernel using unified dispatch
         if (is_mixprec_kernel(kernel_type)) {
             launch_mixprec_kernel_by_type<COMPUTE_TYPE, ACCUMULATE_TYPE>(
@@ -1179,25 +1177,23 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
     printf("Average Error_beta/u: %.6e\n", beta_stats.average/u_compute);
     printf("Log c_hat median: %.6e\n", log_c_hat_median);
 
-    char folder[64];
+    //char folder[64];
     char filename[512];
+    // // Determine folder based on kernel type, not data types
+    // if (is_mixprec_kernel(kernel_type)) {
+    //     // Mixed precision kernels - include type info in folder name
+    //     snprintf(folder, sizeof(folder), "data/UC_%s_UA_%s/",
+    //          getComputeTypeString(), getAccumulateTypeString());
+    // } else {
+    //     // Classical kernels - use generic folder (always FP32)
+    //     snprintf(folder, sizeof(folder), "data/UC_UA_FP32/");
+    // }
 
-    // Determine folder based on kernel type, not data types
-    if (is_mixprec_kernel(kernel_type)) {
-        // Mixed precision kernels - include type info in folder name
-        snprintf(folder, sizeof(folder), "data/UC_%s_UA_%s/",
-             getComputeTypeString(), getAccumulateTypeString());
-    } else {
-        // Classical kernels - use generic folder (always FP32)
-        snprintf(folder, sizeof(folder), "data/UC_UA_FP32/");
-    }
-
-    mkdir(folder, static_cast<mode_t>(0777));
-
-    // Construct filename (same for both modes)
-    snprintf(filename, sizeof(filename), "%s%s_%s_%s_n%d.csv",
-         folder, output_prefix, kernelTypeToString(kernel_type),
-         matrixTypeToString(matrix_type), n);
+    snprintf(filename, sizeof(filename), "%s/error_analysis_%s_%s_n%d.csv",
+         g_data_folder,
+         kernelTypeToString(kernel_type),
+         matrixTypeToString(matrix_type),
+         n);
 
     fp = fopen(filename, "w");
     if (fp) {
@@ -1247,7 +1243,7 @@ void run_multi_sample_analysis(MatrixType matrix_type, KernelType kernel_type, i
 // and computes |C_kernel - C_reference| / (|A| * |B|) for each matrix element,
 // then analyzes statistics within each TILE_SIZE x TILE_SIZE tile
 void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_type,
-                                    int n, int sample_index, const char* output_prefix,
+                                    int n, int sample_index,
                                     bool reproducible) {
     printf("\n=== Per-Tile Error Analysis ===\n");
     printf("Matrix Type: %d, Kernel: %d, Size: %dx%d, Sample: %d\n",
@@ -1357,9 +1353,9 @@ void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_t
     printf("Tile statistics will be computed in plotting script.\n");
 
     // Save error matrix + tile information to binary file
-    char filename[256];
+    char filename[512];
     snprintf(filename, sizeof(filename), "data/%s_%s_per_tile_n%d_sample%d.bin",
-             output_prefix, matrixTypeToString(matrix_type), n, sample_index);
+             matrixTypeToString(matrix_type), kernelTypeToString(kernel_type), n, sample_index);
 
     FILE* fp = fopen(filename, "wb");
     if (fp) {
@@ -1384,8 +1380,7 @@ void run_per_tile_reference_analysis(MatrixType matrix_type, KernelType kernel_t
 
     // Simplified CSV with just basic info (no pre-computed tile stats)
     snprintf(filename, sizeof(filename), "data/%s_%s_per_tile_n%d_sample%d_info.csv",
-             output_prefix, matrixTypeToString(matrix_type), n, sample_index);
-
+             matrixTypeToString(matrix_type), kernelTypeToString(kernel_type), n, sample_index);
     fp = fopen(filename, "w");
     if (fp) {
         fprintf(fp, "matrix_type,kernel_type,matrix_size,sample_index,seedA,seedB,tile_size,num_tiles_per_dim,total_tiles\n");

@@ -21,7 +21,7 @@ PLOTS_FOLDER = "plots"
 OUTPUT_FORMAT = "both"  # "eps", "png", or "both"
 
 # Select which matrix types to process (None = all available)
-MATRIX_TYPES = ['uniform_positive', 'wellcond']  # Set to None for all
+MATRIX_TYPES = ['uniform_positive']  # Set to None for all
 KERNELS = None  # Set to None for all, or list like ['tiled', 'cublas']
 SIZES = None    # Set to None for all, or list like [256, 512, 1024]
 # ERROR_METRIC = '|C-C_ref|/(|A||B|)_avg'  # Choose: '|C-C_ref|/(|A||B|)_avg' or 'E_{AB}/u_c'
