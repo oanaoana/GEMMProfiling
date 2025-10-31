@@ -3,6 +3,7 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+from plot_config import *  # Import all configuration
 
 # Configuration
 # =============================================================================
@@ -14,29 +15,12 @@ KERNELS = ["tiled", "tiled_pairwise"]
 MATRIX_SIZES = [256, 512, 1024, 1536, 2048, 3072, 4096]
 SELECT_MATRIX = "uniform_positive"
 
-# Output configuration
-OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
-
-# Line and marker styling
-LINE_WIDTH = 1.5
-MARKER_SIZE = 9
-
-# Font size configuration
-AXIS_LABEL_FONTSIZE = 18
-TICK_LABEL_FONTSIZE = 16
-LEGEND_FONTSIZE = 14
-TITLE_FONTSIZE = 18
-
-# Font weight configuration
-AXIS_LABEL_BOLD = True
-TICK_LABEL_BOLD = True
-
 # Marker and color mapping
-MARKER_MAP = {
+PARETO_MARKER_MAP = {
     "tiled": "o",
     "tiled_pairwise": "s",
 }
-COLOR_MAP = {
+PARETO_COLOR_MAP = {
     "tiled": "blue",
     "tiled_pairwise": "red",
 }
@@ -148,7 +132,7 @@ for kernel in KERNELS:
 # Plotting: EAB_uc vs Efficiency (Pareto Frontier)
 # ===========================================================
 
-plt.figure(figsize=(10, 7))
+plt.figure(figsize=FIGURE_SIZE)
 
 # Find the reference peak (best observed GFLOPS across all kernels)
 ref_peak = 0.0
@@ -173,8 +157,8 @@ for kernel, df in data.items():
     if not df.empty:
         plt.scatter(
             df['rel_eff'], df['EAB_uc'],  # ← Changed from gflops, error
-            marker=MARKER_MAP.get(kernel, 'o'),
-            color=COLOR_MAP.get(kernel, 'black'),
+            marker=PARETO_MARKER_MAP.get(kernel, 'o'),
+            color=PARETO_COLOR_MAP.get(kernel, 'black'),
             s=MARKER_SIZE**2,
             label=kernel.replace('_', ' ').title(),
             alpha=0.7
@@ -183,7 +167,7 @@ for kernel, df in data.items():
         # Connect points with lines
         plt.plot(
             df['rel_eff'], df['EAB_uc'],  # ← Changed from gflops, error
-            color=COLOR_MAP.get(kernel, 'black'),
+            color=PARETO_COLOR_MAP.get(kernel, 'black'),
             linewidth=LINE_WIDTH,
             alpha=0.5
         )
@@ -192,32 +176,30 @@ for kernel, df in data.items():
 plt.axvline(x=1.0, color='gray', linestyle='--', alpha=0.5,
             label='100% Efficiency')
 
-plt.xlabel("Efficiency (Relative to Peak GFLOPS)",
+ax = plt.gca()
+
+ax.set_xlabel("Efficiency (Relative to Peak GFLOPS)",
            fontsize=AXIS_LABEL_FONTSIZE,
            weight='bold' if AXIS_LABEL_BOLD else 'normal')
-plt.ylabel(r"Normalized Error: $E_{AB}/u_c$",
+ax.set_ylabel(r"Normalized Error: $E_{AB}/u_c$",
            fontsize=AXIS_LABEL_FONTSIZE,
            weight='bold' if AXIS_LABEL_BOLD else 'normal')
 
-plt.yscale('log')
-plt.xlim(0.5, 1.05)
-plt.xticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0], fontsize=TICK_LABEL_FONTSIZE)
-plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
-plt.legend(fontsize=LEGEND_FONTSIZE)
-plt.title("Pareto Frontier: Error vs Efficiency", fontsize=TITLE_FONTSIZE)
-plt.grid(True, which='both', linestyle='--', alpha=0.6)
-plt.tight_layout()
+ax.set_yscale('log')
+ax.set_xlim(0.5, 1.05)
+ax.set_xticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+ax.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+apply_tick_label_bold(ax)
+
+ax.set_title("Pareto Frontier: Error vs Efficiency", fontsize=TITLE_FONTSIZE)
+ax.legend(fontsize=LEGEND_FONTSIZE)
+ax.grid(True, which='both', linestyle=GRID_LINESTYLE, alpha=GRID_ALPHA)
 
 # Save the figure
 os.makedirs("plots", exist_ok=True)
-output_path = f"plots/pareto_error_vs_efficiency.{OUTPUT_FORMAT}"
-if OUTPUT_FORMAT == "both":
-    plt.savefig("plots/pareto_error_vs_efficiency.png", dpi=300, bbox_inches='tight')
-    plt.savefig("plots/pareto_error_vs_efficiency.eps", dpi=300, bbox_inches='tight')
-else:
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+save_plot("plots/pareto_error_vs_efficiency")
 
-print(f"\n✓ Pareto plot saved to: {output_path}")
+print(f"\n✓ Pareto plot saved")
 print("\nData summary:")
 for kernel, df in data.items():
     if not df.empty:

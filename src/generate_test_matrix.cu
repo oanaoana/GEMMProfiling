@@ -14,6 +14,8 @@
 #include <vector>
 #include <cmath>
 #include <time.h>
+#include <thrust/device_ptr.h>
+#include <thrust/sort.h>
 #include <type_traits>  // for std::is_same_v
 #include <cuda_fp16.h>        // for __half
 #include <cuda_bf16.h>        // for __nv_bfloat16
@@ -102,6 +104,15 @@ bool read_matrix_from_file(const char* filename, float* matrix, int n) {
     printf("Matrix loaded from: %s\n", filename);
     return true;
 }
+__global__ void scale_matrix_columns_kernel(float* matrix, const float* scale_values, int n) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < n && col < n) {
+        // Scale column 'col' by scale_values[col]
+        matrix[row * n + col] *= scale_values[col];
+    }
+}
 
 // SVD-based matrix generation with controlled condition number and custom seed
 void generate_matrix_svd_with_seed(float* d_A, int n, float cond_num, unsigned long long seed) {
@@ -147,28 +158,40 @@ void generate_matrix_svd_with_seed(float* d_A, int n, float cond_num, unsigned l
     cusolverDnSorgqr(cusolverH, n, n, n, d_temp2, n, d_tau, d_Rwork, lwork, d_info);
     cudaMemcpy(d_Q2, d_temp2, n * n * sizeof(float), cudaMemcpyDeviceToDevice);
 
-    // Step 3: Construct Sigma on host and upload
-    std::vector<float> h_sigma(n * n, 0.0f);
-    for (int i = 0; i < n; ++i) {
-        float sval = std::pow(cond_num, -((float)i / (n - 1)));  // log-uniform decay
-        h_sigma[i * n + i] = sval;
-    }
-    float* d_sigma;
-    cudaMalloc(&d_sigma, n * n * sizeof(float));
-    cudaMemcpy(d_sigma, h_sigma.data(), n * n * sizeof(float), cudaMemcpyHostToDevice);
+    // Step 3: Generate random singular values and scale Q1 columns directly
+    float* d_sigma_vals;
+    cudaMalloc(&d_sigma_vals, n * sizeof(float));
 
-    // Step 4: A_illcond = Q1 * Sigma * Q2^T
+    float sigma_min = 1.0f / cond_num;
+    float sigma_max = 1.0f;
+
+    // Generate n random values in [sigma_min, sigma_max] using seed
+    generate_matrix_distribution_with_seed(d_sigma_vals, 1, n, DIST_UNIFORM,
+                                       sigma_min, sigma_max, seed + 999999);
+
+    // Sort in DESCENDING order (required for SVD)
+    thrust::device_ptr<float> dev_ptr(d_sigma_vals);
+    thrust::sort(dev_ptr, dev_ptr + n, thrust::greater<float>());
+
+    // Force exact endpoints after sorting to guarantee condition number
+    cudaMemcpy(&d_sigma_vals[0], &sigma_max, sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(&d_sigma_vals[n-1], &sigma_min, sizeof(float), cudaMemcpyHostToDevice);
+
+    // Scale each column of Q1 by corresponding singular value (in-place)
+    dim3 threads(16, 16);  // 2D block for matrix
+    dim3 blocks((n + threads.x - 1) / threads.x, (n + threads.y - 1) / threads.y);
+    scale_matrix_columns_kernel<<<blocks, threads>>>(d_Q1, d_sigma_vals, n);
+    cudaDeviceSynchronize();
+
+    cudaFree(d_sigma_vals);
+
+    // Step 4: A = Q1_scaled * Q2^T (just ONE matrix multiply!)
     float alpha = 1.0f, beta = 0.0f;
-    float* d_tmp;
-    cudaMalloc(&d_tmp, n * n * sizeof(float));
-    // tmp = Q1 * Sigma
-    cublasSgemm(cublasH, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n, &alpha, d_Q1, n, d_sigma, n, &beta, d_tmp, n);
-    // d_A = tmp * Q2^T
-    cublasSgemm(cublasH, CUBLAS_OP_N, CUBLAS_OP_T, n, n, n, &alpha, d_tmp, n, d_Q2, n, &beta, d_A, n);
+    cublasSgemm(cublasH, CUBLAS_OP_N, CUBLAS_OP_T, n, n, n, &alpha, d_Q1, n, d_Q2, n, &beta, d_A, n);
 
     // Cleanup
     cudaFree(d_Q1); cudaFree(d_Q2); cudaFree(d_temp1); cudaFree(d_temp2);
-    cudaFree(d_sigma); cudaFree(d_tmp); cudaFree(d_tau); cudaFree(d_Rwork); cudaFree(d_info);
+    cudaFree(d_tau); cudaFree(d_Rwork); cudaFree(d_info);
     cublasDestroy(cublasH); cusolverDnDestroy(cusolverH); curandDestroyGenerator(gen);
 }
 
@@ -282,6 +305,58 @@ void generate_integer_uniform(int* d_integers, int m, int n, int min_val, int ma
     generate_integer_uniform_with_seed(d_integers, m, n, min_val, max_val, time(NULL));
 }
 
+float compute_condition_number(float* d_matrix, int n) {
+    cusolverDnHandle_t cusolver_handle;
+    cusolverDnCreate(&cusolver_handle);
+
+    // Allocate workspace for SVD
+    float* d_S;  // Singular values
+    float* d_U;
+    float* d_VT;
+    int* devInfo;
+
+    cudaMalloc(&d_S, n * sizeof(float));
+    cudaMalloc(&d_U, n * n * sizeof(float));
+    cudaMalloc(&d_VT, n * n * sizeof(float));
+    cudaMalloc(&devInfo, sizeof(int));
+
+    // Query workspace size
+    int lwork = 0;
+    cusolverDnSgesvd_bufferSize(cusolver_handle, n, n, &lwork);
+
+    float* d_work;
+    cudaMalloc(&d_work, lwork * sizeof(float));
+
+    // Compute SVD: A = U * S * V^T
+    cusolverDnSgesvd(cusolver_handle, 'N', 'N',  // Don't compute U, VT
+                     n, n, d_matrix, n,
+                     d_S, d_U, n, d_VT, n,
+                     d_work, lwork, nullptr, devInfo);
+
+    // Copy singular values to host
+    float* h_S = new float[n];
+    cudaMemcpy(h_S, d_S, n * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Condition number = σ_max / σ_min
+    float sigma_max = h_S[0];
+    float sigma_min = h_S[n-1];
+    float cond = sigma_max / sigma_min;
+
+    printf("  [Verification] Actual singular values: σ_max=%.6e, σ_min=%.6e\n", sigma_max, sigma_min);
+    printf("  [Verification] Actual condition number: %.6e\n", cond);
+
+    // Cleanup
+    delete[] h_S;
+    cudaFree(d_S);
+    cudaFree(d_U);
+    cudaFree(d_VT);
+    cudaFree(d_work);
+    cudaFree(devInfo);
+    cusolverDnDestroy(cusolver_handle);
+
+    return cond;
+}
+
 // Efficient matrix generation for multi-sample analysis
 // - Works directly on pre-allocated device memory
 // - No file I/O overhead
@@ -290,11 +365,42 @@ void generate_integer_uniform(int* d_integers, int m, int n, int min_val, int ma
 void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, unsigned long long seed) {
     switch (type) {
         case MATRIX_ODO_WELL_CONDITIONED:
+            // {
+            // printf("=== MATRIX_ODO_WELL_CONDITIONED Generation ===\n");
+            // printf("  Matrix size: %d x %d\n", n, n);
+            // printf("  Seed: %llu\n", seed);
+            // printf("  Target condition number: %.2e\n", WELL_COND_NUMBER);
             generate_matrix_svd_with_seed(d_matrix, n, WELL_COND_NUMBER, seed);
+            // // Verify actual condition number
+            // float actual_cond = compute_condition_number(d_matrix, n);
+            // printf("  [Verification] Actual condition number: %.6e\n", actual_cond);
+            // printf("=============================================\n");
+
+            // // Sample check - copy first few values back to host
+            // std::vector<float> h_check(10);
+            // cudaMemcpy(h_check.data(), d_matrix, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+            // printf("  First 10 values: ");
+            // for (int i = 0; i < 10; i++) {
+            //     printf("%.6e ", h_check[i]);
+            // }
+            // printf("\n");
+            // printf("========================================\n");
+            // }
             break;
 
         case MATRIX_ODO_ILL_CONDITIONED:
+            // {
+            // printf("=== MATRIX_ODO_ILL_CONDITIONED Generation ===\n");
+            // printf("  Matrix size: %d x %d\n", n, n);
+            // printf("  Seed: %llu\n", seed);
+            // printf("  Target condition number: %.2e\n", ILL_COND_NUMBER);
+
             generate_matrix_svd_with_seed(d_matrix, n, ILL_COND_NUMBER, seed);
+            // // Verify actual condition number
+            // float actual_cond = compute_condition_number(d_matrix, n);
+            // printf("  [Verification] Actual condition number: %.6e\n", actual_cond);
+            // printf("=============================================\n");
+            // }
             break;
 
         case MATRIX_ZEROMEAN:
@@ -377,6 +483,9 @@ void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, u
         case MATRIX_SCALED_2POWERS:
             {
                 // Generate 2-powers matrix: s * 2^(-p) where s is ±1 and p is integer [10,30]
+                printf("=== MATRIX_SCALED_2POWERS Generation ===\n");
+                printf("  Matrix size: %d x %d\n", n, n);
+                printf("  Seed: %llu\n", seed);
                 int total_elements = n * n;
 
                 // Allocate temporary memory for signs and exponents
@@ -394,6 +503,16 @@ void generate_matrix_device_with_seed(float* d_matrix, int n, MatrixType type, u
 
                 twopowers_transform_kernel<<<grid_size, block_size>>>(d_signs, d_exponents, d_matrix, total_elements);
                 cudaDeviceSynchronize();
+
+                // Sample check - copy first few values back to host
+                std::vector<float> h_check(10);
+                cudaMemcpy(h_check.data(), d_matrix, 10 * sizeof(float), cudaMemcpyDeviceToHost);
+                printf("  First 10 values: ");
+                for (int i = 0; i < 10; i++) {
+                    printf("%.6e ", h_check[i]);
+                }
+                printf("\n");
+                printf("========================================\n");
 
                 // Cleanup temporary memory
                 cudaFree(d_signs);

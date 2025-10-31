@@ -19,11 +19,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from io import StringIO
-
+from plot_config import *  # Import all configuration
 
 # Configure data folder here
 DATA_FOLDER = "data/UC_UA_FP32"  # Change this to "data" for current data
-OUTPUT_FORMAT = "png"  # "eps", "png", or "both"
 
 # Plot selection flags - set to False to disable specific plot types
 PLOT_BASIC_METRICS = True          # E_AB/u_c, E_AB/beta, E_AB, std plots
@@ -35,87 +34,96 @@ PLOT_CALIBRATION = False            # Calibration comparison plots (experimental
 # Available types: '2powers', 'illcond', 'uniform_positive', 'wellcond', 'zeromean'
 MATRIX_TYPES = ['uniform_positive', 'wellcond', '2powers', 'illcond', 'zeromean']  # Set to None for all, or list like ['2powers', 'wellcond']
 
-# Color scheme: 3 colors for 3 kernel families
-KERNEL_COLORS = {
-    'cublas': 'blue',                    # cuBLAS - blue
-    'cutlass_splitk_flat': 'red',        # CUTLASS family - red
-    'cutlass_splitk_pairwise': 'red',    # CUTLASS family - red
-    'tiled': 'green',                    # Tiled family - green
-    'tiled_pairwise': 'green'            # Tiled family - green
-}
+# # Color scheme: 3 colors for 3 kernel families
+# KERNEL_COLORS = {
+#     'cublas': 'blue',                    # cuBLAS - blue
+#     'cutlass_splitk_flat': 'red',        # CUTLASS family - red
+#     'cutlass_splitk_pairwise': 'red',    # CUTLASS family - red
+#     'tiled': 'green',                    # Tiled family - green
+#     'tiled_pairwise': 'green'            # Tiled family - green
+# }
 
-# Marker scheme: squares for pairwise, circles for others
-KERNEL_MARKERS = {
-    'cublas': 'o',                       # Circle
-    'cutlass_splitk_flat': 'o',          # Circle
-    'cutlass_splitk_pairwise': 's',      # Square (pairwise)
-    'tiled': 'o',                        # Circle
-    'tiled_pairwise': 's'                # Square (pairwise)
-}
+# # Marker scheme: squares for pairwise, circles for others
+# KERNEL_MARKERS = {
+#     'cublas': 'o',                       # Circle
+#     'cutlass_splitk_flat': 'o',          # Circle
+#     'cutlass_splitk_pairwise': 's',      # Square (pairwise)
+#     'tiled': 'o',                        # Circle
+#     'tiled_pairwise': 's'                # Square (pairwise)
+# }
 
-# Line and marker styling
-LINE_WIDTH = 1.5          # Width of plot lines
-MARKER_SIZE = 9           # Size of markers
-THEORETICAL_LINE_WIDTH = 1.5  # Width of theoretical/reference lines
+# # Line and marker styling
+# LINE_WIDTH = 1.5          # Width of plot lines
+# MARKER_SIZE = 10           # Size of markers
+# THEORETICAL_LINE_WIDTH = 1.5  # Width of theoretical/reference lines
 
-# Font size configuration - adjust these for your report
-AXIS_LABEL_FONTSIZE = 18   # Size for axis labels (xlabel, ylabel)
-TICK_LABEL_FONTSIZE = 16   # Size for tick labels (numbers on axes)
-LEGEND_FONTSIZE = 14       # Size for legend text
-TITLE_FONTSIZE = 18        # Size for plot titles
-DEFAULT_FONTSIZE = 14      # Default matplotlib font size
+# # Font size configuration - adjust these for your report
+# AXIS_LABEL_FONTSIZE = 18   # Size for axis labels (xlabel, ylabel)
+# TICK_LABEL_FONTSIZE = 18   # Size for tick labels (numbers on axes)
+# LEGEND_FONTSIZE = 14       # Size for legend text
+# TITLE_FONTSIZE = 18        # Size for plot titles
+# DEFAULT_FONTSIZE = 14      # Default matplotlib font size
 
-# Font weight configuration - set to True for bold, False for normal
-AXIS_LABEL_BOLD = False     # Make axis labels bold
-TICK_LABEL_BOLD = False    # Make tick labels bold
+# # Font weight configuration - set to True for bold, False for normal
+# AXIS_LABEL_BOLD = False     # Make axis labels bold
+# TICK_LABEL_BOLD = False    # Make tick labels bold
 
-# Calibration configuration - specific matrix sizes to use for c_hat calibration
-CUTLASS_CALIBRATION_SIZES = [4096]  # Only use these sizes for CUTLASS kernel calibration
+# # Calibration configuration - specific matrix sizes to use for c_hat calibration
+# CUTLASS_CALIBRATION_SIZES = [4096]  # Only use these sizes for CUTLASS kernel calibration
 
-# Deff plot configuration - select ONE kernel to plot
-DEFF_SELECT_KERNEL = 'cublas'  # Which kernel to plot: 'cublas', 'tiled', 'cutlass_splitk_flat', 'cutlass_splitk_pairwise', 'tiled_pairwise'
-DEFF_PLOT_ALL_KERNELS = True # Set to True to generate Deff plots for ALL kernels in addition to the selected one
+# # Deff plot configuration - select ONE kernel to plot
+# DEFF_SELECT_KERNEL = 'cublas'  # Which kernel to plot: 'cublas', 'tiled', 'cutlass_splitk_flat', 'cutlass_splitk_pairwise', 'tiled_pairwise'
+# DEFF_PLOT_ALL_KERNELS = True # Set to True to generate Deff plots for ALL kernels in addition to the selected one
 
-KERNEL_LABELS = {
-    'cublas': 'cuBLAS',
-    'cutlass_splitk_flat': 'CUTLASS Split-K Flat',
-    'cutlass_splitk_pairwise': 'CUTLASS Split-K Pairwise',
-    'tiled': 'Tiled (Ours)',
-    'tiled_pairwise': 'Tiled Pairwise (Ours)'
-}
+# KERNEL_LABELS = {
+#     'cublas': 'cuBLAS',
+#     'cutlass_splitk_flat': 'CUTLASS Split-K Flat',
+#     'cutlass_splitk_pairwise': 'CUTLASS Split-K Pairwise',
+#     'tiled': 'Tiled (Ours)',
+#     'tiled_pairwise': 'Tiled Pairwise (Ours)'
+# }
 
-# Enable better mathematical notation using matplotlib's mathtext (no LaTeX required)
-plt.rcParams['font.size'] = DEFAULT_FONTSIZE
+# # Y-axis limits for E_AB/u_c plots per matrix type
+# Y_LIMITS_E_AB_OVER_U = {
+#     'uniform_positive': (1e-1, 1e+2),
+#     'wellcond': (1e-2, 1e+1),
+#     '2powers': (1e-2, 1e+1),
+#     'illcond': (1e-2, 1e+1),
+#     'zeromean': (1e-2, 1e+1)
+# }
 
-def save_plot(base_filename, format='both', dpi=300, bbox_inches='tight'):
-    """Save the current plot in specified format(s).
+# # Enable better mathematical notation using matplotlib's mathtext (no LaTeX required)
+# plt.rcParams['font.size'] = DEFAULT_FONTSIZE
 
-    Args:
-        base_filename: Base filename without extension
-        format: 'eps', 'png', or 'both'
-        dpi: Resolution for saving
-        bbox_inches: Bounding box setting
-    """
-    if format in ['eps', 'both']:
-        eps_filename = f"{base_filename}.eps"
-        plt.savefig(eps_filename, dpi=dpi, bbox_inches=bbox_inches)
-        print(f"Saved: {eps_filename}")
+# def save_plot(base_filename, format='both', dpi=300, bbox_inches='tight'):
+#     """Save the current plot in specified format(s).
 
-    if format in ['png', 'both']:
-        png_filename = f"{base_filename}.png"
-        plt.savefig(png_filename, dpi=dpi, bbox_inches=bbox_inches)
-        print(f"Saved: {png_filename}")
+#     Args:
+#         base_filename: Base filename without extension
+#         format: 'eps', 'png', or 'both'
+#         dpi: Resolution for saving
+#         bbox_inches: Bounding box setting
+#     """
+#     if format in ['eps', 'both']:
+#         eps_filename = f"{base_filename}.eps"
+#         plt.savefig(eps_filename, dpi=dpi, bbox_inches=bbox_inches)
+#         print(f"Saved: {eps_filename}")
 
-def format_matrix_size_labels(sizes):
-    """Format matrix size labels, using power-of-2 notation only for actual powers of 2."""
-    labels = []
-    tick_positions = []
-    for size in sizes:
-        if size & (size - 1) == 0:  # Check if power of 2
-            power = int(np.log2(size))
-            labels.append(f'$2^{{{power}}}$')
-            tick_positions.append(size)
-    return tick_positions, labels
+#     if format in ['png', 'both']:
+#         png_filename = f"{base_filename}.png"
+#         plt.savefig(png_filename, dpi=dpi, bbox_inches=bbox_inches)
+#         print(f"Saved: {png_filename}")
+
+# def format_matrix_size_labels(sizes):
+#     """Format matrix size labels, using power-of-2 notation only for actual powers of 2."""
+#     labels = []
+#     tick_positions = []
+#     for size in sizes:
+#         if size & (size - 1) == 0:  # Check if power of 2
+#             power = int(np.log2(size))
+#             labels.append(f'$2^{{{power}}}$')
+#             tick_positions.append(size)
+#     return tick_positions, labels
 
 def load_data():
     """Load and combine CSV files with simplified type handling."""
@@ -198,29 +206,34 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
+        # Add horizontal reference line at y=1
+        plt.axhline(y=1, color='black', linestyle='--', alpha=0.5,
+                   linewidth=THEORETICAL_LINE_WIDTH)
+
+        # NOW configure everything at the end using gca()
+        ax = plt.gca()
+        ax.set_yscale('log')
+        ax.grid(True, alpha=GRID_ALPHA)
+
+        # Set axis labels
         y_label_text = r'$\mathbf{E_{AB} / u_c}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u_c$'
+        ax.set_xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        ax.set_ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
-        plt.yscale('log')
+        # Set tick parameters
+        ax.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
+        apply_tick_label_bold(ax)
 
-        plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
-
+        # Set x-axis ticks (power of 2 labels)
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
-        plt.xticks(tick_positions, tick_labels)
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels)
 
-        if all_y_values:
-            y_min, y_max = min(all_y_values), max(all_y_values)
-            y_range = y_max / y_min if y_min > 0 else y_max - y_min
-            if y_range > 1:
-                margin = 0.2
-                plt.ylim(y_min * (1 - margin), y_max * (1 + margin))
+        # Set y-axis limits (LAST, so nothing overrides it)
+        if matrix_type in Y_LIMITS_E_AB_OVER_U:
+            ax.set_ylim(Y_LIMITS_E_AB_OVER_U[matrix_type])
+        else:
+            ax.set_ylim(1e-2, 1e+1)  # Default limits
 
         base_filename = f"plots/E_AB_over_u_{matrix_type}"
         save_plot(base_filename, format=OUTPUT_FORMAT)
@@ -244,19 +257,16 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{E_{AB} / \beta}$' if AXIS_LABEL_BOLD else r'$E_{AB} / \beta$'
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
 
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
         plt.xticks(tick_positions, tick_labels)
@@ -296,19 +306,17 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{E_{AB}}$' if AXIS_LABEL_BOLD else r'$E_{AB}$'
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
 
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
         plt.xticks(tick_positions, tick_labels)
@@ -342,19 +350,17 @@ def create_beta_plots(df, actual_matrix_sizes):
                         f'{marker}-', color=color,
                         linewidth=LINE_WIDTH, markersize=MARKER_SIZE, fillstyle='none')
 
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{\sigma(E_{AB})}$' if AXIS_LABEL_BOLD else r'$\sigma(E_{AB})$'
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
 
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
         plt.xticks(tick_positions, tick_labels)
@@ -535,21 +541,17 @@ def create_single_kernel_deff_plot(df, actual_matrix_sizes, kernel_name):
 
             all_y_values.extend(theoretical_values)
 
-        # Format the plot
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{D_{eff}}$' if AXIS_LABEL_BOLD else r'$D_{eff}$'
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
 
         # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -645,21 +647,17 @@ def deff_all_kernels(df, actual_matrix_sizes):
 
                 all_y_values.extend(theoretical_values)
 
-        # Format the plot
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         y_label_text = r'$\mathbf{D_{eff}}$' if AXIS_LABEL_BOLD else r'$D_{eff}$'
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
 
         # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -755,7 +753,7 @@ def create_uncertainty_band_plots(df, actual_matrix_sizes):
         plt.ylabel(r'$\mathbf{E_{AB} / u}$', fontsize=AXIS_LABEL_FONTSIZE, weight='bold')
         plt.title(f'E_{{AB}}/u with Uncertainty Bands - {matrix_type}', fontsize=TITLE_FONTSIZE, weight='bold')
         plt.legend(frameon=False, ncol=2, fontsize=LEGEND_FONTSIZE, loc='best')
-        plt.grid(True, alpha=0.3)
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
 
@@ -818,20 +816,16 @@ def create_spread_cloud_plots(df, actual_matrix_sizes):
                 plt.fill_between(subset['matrix_size'], p10_relative, p95_relative,
                                alpha=0.7, color=color)
 
-        # Format the plot
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel('Deviation from mean (%) - P10 to P95 spread', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel('Deviation from mean (%) - P10 to P95 spread', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
         plt.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
-        plt.grid(True, alpha=0.3)
+        plt.grid(True, alpha=GRID_ALPHA)
 
         # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
         # Apply bold formatting to tick labels if requested
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -944,22 +938,19 @@ def create_calibration_comparison_plots(df, actual_matrix_sizes, target_kernels,
             all_y_values.extend(experimental_E_over_u)
             all_y_values.extend(predicted_E_over_u_filtered)
 
-        axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
         # Create conditional mathtext labels based on bold setting
         y_label_text = r'$\mathbf{E_{AB} / u}$' if AXIS_LABEL_BOLD else r'$E_{AB} / u$'
 
-        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-        plt.grid(True, alpha=0.3)
+        plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.ylabel(y_label_text, fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+        plt.grid(True, alpha=GRID_ALPHA)
         plt.yscale('log')
 
         # Configure tick labels
         plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
         # Apply bold formatting to tick labels if requested
-        if TICK_LABEL_BOLD:
-            ax = plt.gca()
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_weight('bold')
+        ax = plt.gca()
+        apply_tick_label_bold(ax)
 
         # Set x-axis to show only powers of 2
         tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
@@ -1006,22 +997,18 @@ def plot_tiled_vs_pairwise_std(df, actual_matrix_sizes):
                 's-', color='green', linewidth=LINE_WIDTH, markersize=MARKER_SIZE,
                 label='Tiled Pairwise', fillstyle='none')
 
-    # Format the plot
-    axis_weight = 'bold' if AXIS_LABEL_BOLD else 'normal'
-    plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
-    plt.ylabel(r'$\sigma(E_{AB})$', fontsize=AXIS_LABEL_FONTSIZE, weight=axis_weight)
+    plt.xlabel('k - inner matrix dimension', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
+    plt.ylabel(r'$\sigma(E_{AB})$', fontsize=AXIS_LABEL_FONTSIZE, weight=get_axis_label_weight())
     plt.legend(fontsize=LEGEND_FONTSIZE)
-    plt.grid(True, alpha=0.3)
+    plt.grid(True, alpha=GRID_ALPHA)
 
     # Set x-axis to show only powers of 2
     tick_positions, tick_labels = format_matrix_size_labels(actual_matrix_sizes)
     plt.xticks(tick_positions, tick_labels)
 
     plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_FONTSIZE)
-    if TICK_LABEL_BOLD:
-        ax = plt.gca()
-        for label in ax.get_xticklabels() + ax.get_yticklabels():
-            label.set_weight('bold')
+    ax = plt.gca()
+    apply_tick_label_bold(ax)
 
     plt.tight_layout()
 
